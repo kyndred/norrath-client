@@ -183,12 +183,15 @@ end
 
 -- A compact TP "number" style block (label, not a bar).
 local function tpNumberStyle(l)
-  l:setStyleSheet("background-color:#12151d; border:1px solid #262c3a; border-radius:6px;")
+  l:setStyleSheet("background-color:#12151d; border:1px solid #262c3a; border-radius:6px;" ..
+    " qproperty-alignment:'AlignCenter';")
 end
+-- TP as a single inline line ("TP 0") so it sits flush alongside the HP/MN/MV
+-- bars at the same height, instead of a taller stacked block.
 local function tpNumberHTML(tp)
   local col = tp >= 100 and "#fbbf24" or "#2dd4bf"
-  return "<center><span style='color:#8ea0bf; font-size:" .. PT(8) .. "pt'>TP</span><br>" ..
-    "<span style='color:" .. col .. "; font-weight:bold; font-size:" .. PT(15) .. "pt'>" .. tp .. "</span></center>"
+  return "<center><span style='color:#8ea0bf; font-size:" .. PT(8) .. "pt'>TP </span>" ..
+    "<span style='color:" .. col .. "; font-weight:bold; font-size:" .. PT(11) .. "pt'>" .. tp .. "</span></center>"
 end
 
 -- Positions/sizes a horizontal row of widgets, hiding any marked !visible and
@@ -493,7 +496,8 @@ function H.updateVitals()
     { widget = H.gHP, weight = 170, visible = true, y = gy, height = gh },
     { widget = H.gMN, weight = 170, visible = H.cfg.v_mn and num(v.maxmana) > 0, y = gy, height = gh },
     { widget = H.gMV, weight = 132, visible = H.cfg.v_mv, y = gy, height = gh },
-    { widget = H.tpNum, weight = 60, visible = H.cfg.v_tp, y = H.top + S(16), height = S(26) },
+    -- TP sits inline with the bars: same y and height as the gauges.
+    { widget = H.tpNum, weight = 64, visible = H.cfg.v_tp, y = gy, height = gh },
   })
 end
 
@@ -554,7 +558,7 @@ function H.updateParty()
     layoutRow(gaugesX, gaugesW, S(4), {
       { widget = hp, weight = 150, visible = true, y = y + S(3), height = gh },
       { widget = mp, weight = 150, visible = H.cfg.p_mp and num(m.maxmana) > 0, y = y + S(3), height = gh },
-      { widget = tp, weight = 56, visible = H.cfg.p_tp, y = y, height = rowH },
+      { widget = tp, weight = 56, visible = H.cfg.p_tp, y = y + S(3), height = gh },
     })
   end
   hideFrom(H.pName, i + 1)
@@ -932,4 +936,4 @@ H.built = false
 H.build()
 H.refreshAll()
 H.startResizeWatch()  -- reflow children when a panel is drag-resized
-cecho("<green>[Norrath HUD]<reset> v6 loaded (resizable panels + 'ui scale'). Right-click a panel to configure it, or type 'ui help'.\n")
+cecho("<green>[Norrath HUD]<reset> v7 loaded (inline TP + resizable panels + 'ui scale'). Right-click a panel to configure it, or type 'ui help'.\n")
