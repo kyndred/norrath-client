@@ -65,9 +65,19 @@ end
 -- geometry) so it reads well at any resolution / DPI. `S` scales a pixel size,
 -- `PT` scales a font point-size (as a string for stylesheets). Both read
 -- H.cfg.scale live, defaulting to 1 before config loads.
-local function uiScale() return (H.cfg and tonumber(H.cfg.scale)) or 1 end
+-- Per-panel scale: each window has its own size/font multiplier (set via
+-- `ui scale <panel> <n>` or its right-click Bigger/Smaller menu). `H.curScale`
+-- is the scale of the panel currently being laid out; panel()/each updater set
+-- it on entry, and S()/PT() read it.
+local PANEL_KEYS = { "vitals", "party", "target", "enemies", "pets", "abilities", "map" }
+local NAME2KEY = {
+  nhVitals = "vitals", nhParty = "party", nhTarget = "target",
+  nhEnemies = "enemies", nhPets = "pets", nhAbil = "abilities", nhMap = "map",
+}
+local function uiScale() return tonumber(H.curScale) or 1 end
 local function S(v) return math.max(1, math.floor(v * uiScale() + 0.5)) end
 local function PT(base) return tostring(math.max(6, math.floor(base * uiScale() + 0.5))) end
+local function useScale(key) H.curScale = (H.cfg and H.cfg.pscale and H.cfg.pscale[key]) or 1 end
 
 -- Button style with a hover highlight (Qt stylesheet on the QLabel).
 local function btnStyle(accent)
@@ -109,8 +119,9 @@ H.containers = H.containers or {}
 H.panelDefaults = H.panelDefaults or {}
 
 local function panel(name, x, y, w, h, title)
-  -- Store the UNSCALED base size; the live size is base * cfg.scale, applied
-  -- here and re-applied by resetPositions() so `ui scale` resizes panels.
+  -- Store the UNSCALED base size; the live size is base * this panel's scale,
+  -- applied here and re-applied by resetPositions() so `ui scale` resizes it.
+  useScale(NAME2KEY[name])
   H.panelDefaults[name] = { x = x, y = y, w = w, h = h }
   local o = { name = nm(name), x = x, y = y, width = S(w), height = S(h) }
   if ADJ then
@@ -233,7 +244,9 @@ local CFG_PATH = getMudletHomeDir() .. "/NorrathHUD_cfg.lua"
 
 local function defaultCfg()
   return {
-    scale = 1.0,                                    -- global size/font multiplier (per machine)
+    scale = 1.0,                                    -- legacy global (migrated into pscale below)
+    pscale = { vitals = 1, party = 1, target = 1,   -- per-panel size/font multipliers
+               enemies = 1, pets = 1, abilities = 1, map = 1 },
     v_mn = true, v_mv = true, v_tp = true,          -- which vitals gauges show
     v_num = true, v_pct = false, v_lbl = true,      -- vitals gauge text content
     p_mp = true, p_tp = true, p_num = true, p_pct = false, p_lbl = true, -- party
@@ -247,8 +260,20 @@ end
 local function loadCfg()
   local t = {}
   if table.load then pcall(function() table.load(CFG_PATH, t) end) end
+  local savedPscale = t.pscale                     -- capture before the default merge
   local d = defaultCfg()
   for k, v in pairs(d) do if t[k] == nil then t[k] = v end end
+  -- Per-panel scale. If the saved config predates it (no pscale), seed every
+  -- panel from the legacy global `scale` so an old global setting carries over.
+  if type(savedPscale) ~= "table" then
+    local legacy = tonumber(t.scale) or 1
+    t.pscale = {}
+    for _, k in ipairs(PANEL_KEYS) do t.pscale[k] = legacy end
+  else
+    for _, k in ipairs(PANEL_KEYS) do
+      if t.pscale[k] == nil then t.pscale[k] = 1 end  -- fill any newly-added panel
+    end
+  end
   return t
 end
 
@@ -301,6 +326,17 @@ end
 -- Leading checkbox glyph for a menu item label, reflecting current cfg state.
 local function chk(key, label)
   return (H.cfg[key] and "[x] " or "[ ] ") .. label
+end
+
+-- Right-click Bigger/Smaller menu items that scale ONE panel by +/-0.1.
+local function scaleMenuItems(key)
+  local function bump(delta)
+    return function()
+      local cur = (H.cfg.pscale and H.cfg.pscale[key]) or 1
+      H.command("scale " .. key .. " " .. string.format("%.2f", cur + delta))
+    end
+  end
+  return { { "Bigger  (scale +)", bump(0.1) }, { "Smaller (scale -)", bump(-0.1) } }
 end
 
 -- ---------------------------------------------------------------------------
@@ -392,9 +428,8 @@ function H.build()
     { chk("v_num", "Show Numbers"), toggler("v_num", H.updateVitals) },
     { chk("v_pct", "Show Percent"), toggler("v_pct", H.updateVitals) },
     { chk("v_lbl", "Show Labels"), toggler("v_lbl", H.updateVitals) },
-    { "Bigger (scale +)", function() H.command("scale " .. string.format("%.2f", (H.cfg.scale or 1) + 0.1)) end },
-    { "Smaller (scale -)", function() H.command("scale " .. string.format("%.2f", (H.cfg.scale or 1) - 0.1)) end },
   })
+  addMenu(H.cVitals, scaleMenuItems("vitals"))
 
   H.cTarget = panel("nhTarget", "2%", "20%", 566, ADJ and 52 or 30, "Target")
   H.gTarget = gauge("nhTgt", H.cTarget, 8, top, 550, 22)
@@ -403,6 +438,7 @@ function H.build()
     { chk("t_pct", "Show Percent"), toggler("t_pct", H.updateTarget) },
     { chk("t_lbl", "Show Labels"), toggler("t_lbl", H.updateTarget) },
   })
+  addMenu(H.cTarget, scaleMenuItems("target"))
 
   -- Party: FFXI-style rows -- name/class + HP bar + MP bar + TP number.
   H.cParty = panel("nhParty", "2%", "32%", 474, 210, "Party")
@@ -418,6 +454,7 @@ function H.build()
     { chk("p_pct", "Show Percent"), toggler("p_pct", H.updateParty) },
     { chk("p_lbl", "Show Labels"), toggler("p_lbl", H.updateParty) },
   })
+  addMenu(H.cParty, scaleMenuItems("party"))
 
   H.cEnemies = panel("nhEnemies", "77%", "3%", 272, 250, "Enemies")
   H.enemiesTop = top
@@ -426,6 +463,7 @@ function H.build()
     { chk("e_pct", "Show HP%"), toggler("e_pct", H.updateEnemies) },
     { chk("e_compact", "Compact"), toggler("e_compact", H.updateEnemies) },
   })
+  addMenu(H.cEnemies, scaleMenuItems("enemies"))
 
   H.cPets = panel("nhPets", "77%", "44%", 272, 230, "Pets")
   H.petsTop = top
@@ -435,6 +473,7 @@ function H.build()
     { chk("pt_pct", "Show HP%"), toggler("pt_pct", H.updatePets) },
     { chk("pt_compact", "Compact"), toggler("pt_compact", H.updatePets) },
   })
+  addMenu(H.cPets, scaleMenuItems("pets"))
 
   H.cAbil = panel("nhAbil", "58%", "3%", 208, 340, "Abilities")
   H.abilTop = top
@@ -442,6 +481,7 @@ function H.build()
   addMenu(H.cAbil, {
     { chk("a_compact", "Compact"), toggler("a_compact", H.updateAbilities) },
   })
+  addMenu(H.cAbil, scaleMenuItems("abilities"))
 
   -- Map: fog-of-war grid of every room the character has ever seen, centered
   -- on their current room. Cell pool + a separate small-dot pool for party
@@ -454,6 +494,7 @@ function H.build()
   H.mapContentH = 280 - top - 10
   H.mapPool = { prefix = "nhMapCell" }
   H.mapPartyPool = { prefix = "nhMapParty" }
+  addMenu(H.cMap, scaleMenuItems("map"))
 
   H.windows = {
     vitals = H.cVitals, party = H.cParty, target = H.cTarget,
@@ -474,6 +515,7 @@ function H.updateVitals()
   if not H.built then return end
   if H.winVisible.vitals == false then H.cVitals:hide(); return end
   H.cVitals:show()
+  useScale("vitals")
   local v = H.gmcp("Char.Vitals") or {}
   local b = H.gmcp("Char.Base") or {}
   pcall(function()
@@ -507,6 +549,7 @@ function H.updateTarget()
   local t = H.gmcp("Char.Target") or {}
   if t.active then
     H.cTarget:show()
+    useScale("target")
     H.gTarget:move(8, H.top)
     H.gTarget:resize(H.cw(H.cTarget), S(22))
     setGauge(H.gTarget, t.hp, t.maxhp, targetText(t), hpGrad(t.hp, t.maxhp))
@@ -519,6 +562,7 @@ function H.updateParty()
   if not H.built then return end
   if H.winVisible.party == false then H.cParty:hide(); return end
   H.cParty:show()
+  useScale("party")
   local members = H.gmcp("Group.Members")
   if type(members) ~= "table" then members = {} end
   local rowH, gap = S(28), S(4)
@@ -571,6 +615,7 @@ function H.updateEnemies()
   if not H.built then return end
   if H.winVisible.enemies == false then H.cEnemies:hide(); return end
   H.cEnemies:show()
+  useScale("enemies")
   local e = H.gmcp("Char.Enemies") or {}
   local foes = e.enemies or {}
   local rowH = S(H.cfg.e_compact and 22 or 26)
@@ -604,6 +649,7 @@ function H.updatePets()
   if not H.built then return end
   if H.winVisible.pets == false then H.cPets:hide(); return end
   H.cPets:show()
+  useScale("pets")
   local p = H.gmcp("Char.Pets") or {}
   local pets = p.pets or {}
   local rowH = S(H.cfg.pt_compact and 22 or 26)
@@ -643,6 +689,7 @@ function H.updateAbilities()
   if not H.built then return end
   if H.winVisible.abilities == false then H.cAbil:hide(); return end
   H.cAbil:show()
+  useScale("abilities")
   local a = H.gmcp("Char.Abilities") or {}
   local rows = {}
   for _, s in ipairs(a.spells or {}) do rows[#rows + 1] = { s.name or s.cmd, s.cmd, "#38bdf8" } end
@@ -667,6 +714,7 @@ function H.updateMap()
   if not H.built then return end
   if H.winVisible.map == false then H.cMap:hide(); return end
   H.cMap:show()
+  useScale("map")
 
   local rm = H.gmcp("Room.Map")
   if type(rm) ~= "table" or type(rm.rooms) ~= "table" or #rm.rooms == 0 then
@@ -808,6 +856,7 @@ function H.resetPositions()
     local base = H.windowBaseName[key]
     local d = base and H.panelDefaults[base]
     if c and d then
+      useScale(key)
       pcall(function() c:move(d.x, d.y) end)
       pcall(function() c:resize(S(d.w), S(d.h)) end)
     end
@@ -825,7 +874,8 @@ local HELP_LINES = {
   "  ui reload [path]- dev: hot-reload from your working-copy .lua (set path once)",
   "  update ui       - same as 'ui reload' (hot-reload from your working copy)",
   "  ui refresh      - refresh all panels from current GMCP state",
-  "  ui scale <n>    - size the whole HUD for your screen (e.g. 1.25; try 0.8-1.6)",
+  "  ui scale <n>       - size EVERY panel (e.g. 1.25; try 0.8-1.6)",
+  "  ui scale <win> <n> - size ONE panel: vitals/party/target/enemies/pets/abilities/map",
   "  ui reset        - reset config + panel positions to defaults",
   "  ui show|showall - show every panel",
   "  ui close|hide   - hide every panel",
@@ -841,18 +891,36 @@ function H.command(rest)
   if cmd == "" or cmd == "help" then
     for _, line in ipairs(HELP_LINES) do cecho("<cyan>" .. line .. "\n") end
   elseif cmd == "scale" or cmd == "font" or cmd == "size" then
-    local f = tonumber(arg)
-    if not f then
-      cecho("<cyan>[Norrath HUD] scale is " .. tostring(H.cfg.scale or 1) ..
-        ". Usage: |wui scale <n>|n (e.g. ui scale 1.25; bigger = larger fonts + panels).\n")
+    -- Forms: "ui scale <n>" (every panel) or "ui scale <panel> <n>" (one panel).
+    local a1, a2 = arg:match("^(%S*)%s*(%S*)$")
+    local panelKey, val
+    if a2 ~= "" then panelKey = string.lower(a1); val = tonumber(a2) else val = tonumber(a1) end
+    if not val then
+      local parts = {}
+      for _, k in ipairs(PANEL_KEYS) do parts[#parts + 1] = k .. "=" .. tostring(H.cfg.pscale[k] or 1) end
+      cecho("<cyan>[Norrath HUD] per-panel scale: " .. table.concat(parts, "  ") .. "\n")
+      cecho("<cyan>  Usage: |wui scale <n>|n (all) or |wui scale <panel> <n>|n -- panels: " ..
+        table.concat(PANEL_KEYS, ", ") .. ".\n")
       return
     end
-    H.cfg.scale = math.max(0.5, math.min(3.0, f))
+    val = math.max(0.5, math.min(3.0, val))
+    if panelKey and panelKey ~= "" then
+      local valid = false
+      for _, k in ipairs(PANEL_KEYS) do if k == panelKey then valid = true end end
+      if not valid then
+        cecho("<red>[Norrath HUD] no panel '" .. panelKey .. "'. Panels: " ..
+          table.concat(PANEL_KEYS, ", ") .. ".\n")
+        return
+      end
+      H.cfg.pscale[panelKey] = val
+      cecho("<green>[Norrath HUD] " .. panelKey .. " scale = " .. val .. ".\n")
+    else
+      for _, k in ipairs(PANEL_KEYS) do H.cfg.pscale[k] = val end
+      cecho("<green>[Norrath HUD] all panels scale = " .. val .. ".\n")
+    end
     H.saveCfg()
-    H.resetPositions()   -- re-apply panel sizes at the new scale
+    H.resetPositions()
     H.refreshAll()
-    cecho("<green>[Norrath HUD] scale set to " .. H.cfg.scale ..
-      ". Panels resized -- drag to taste, or 'ui reset' to re-center.\n")
   elseif cmd == "reload" then
     -- Dev hot-reload is opt-in and machine-local: point it at your working-copy
     -- .lua with `ui reload <path>` once (persists in NorrathHUD.devPath for the
@@ -936,4 +1004,4 @@ H.built = false
 H.build()
 H.refreshAll()
 H.startResizeWatch()  -- reflow children when a panel is drag-resized
-cecho("<green>[Norrath HUD]<reset> v7 loaded (inline TP + resizable panels + 'ui scale'). Right-click a panel to configure it, or type 'ui help'.\n")
+cecho("<green>[Norrath HUD]<reset> v8 loaded (per-panel scale + inline TP + resizable panels). Right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
