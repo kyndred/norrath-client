@@ -61,11 +61,19 @@ local function hpGrad(cur, mx)
   if f > 0.5 then return GRAD.hp_hi elseif f > 0.25 then return GRAD.hp_md else return GRAD.hp_lo end
 end
 
+-- Scale helpers -- one `cfg.scale` knob resizes the whole HUD (fonts AND
+-- geometry) so it reads well at any resolution / DPI. `S` scales a pixel size,
+-- `PT` scales a font point-size (as a string for stylesheets). Both read
+-- H.cfg.scale live, defaulting to 1 before config loads.
+local function uiScale() return (H.cfg and tonumber(H.cfg.scale)) or 1 end
+local function S(v) return math.max(1, math.floor(v * uiScale() + 0.5)) end
+local function PT(base) return tostring(math.max(6, math.floor(base * uiScale() + 0.5))) end
+
 -- Button style with a hover highlight (Qt stylesheet on the QLabel).
 local function btnStyle(accent)
   accent = accent or "#3b82f6"
   return "QLabel{ background-color:#171b26; color:#e5e7eb; border:1px solid #2b3140;" ..
-         " border-radius:6px; padding:2px 6px; font-family:" .. FONT .. "; font-size:10pt;" ..
+         " border-radius:6px; padding:2px 6px; font-family:" .. FONT .. "; font-size:" .. PT(10) .. "pt;" ..
          " qproperty-alignment:'AlignLeft|AlignVCenter'; }" ..
          " QLabel:hover{ background-color:#232a3a; border-color:" .. accent .. "; color:#ffffff; }"
 end
@@ -101,17 +109,19 @@ H.containers = H.containers or {}
 H.panelDefaults = H.panelDefaults or {}
 
 local function panel(name, x, y, w, h, title)
+  -- Store the UNSCALED base size; the live size is base * cfg.scale, applied
+  -- here and re-applied by resetPositions() so `ui scale` resizes panels.
   H.panelDefaults[name] = { x = x, y = y, w = w, h = h }
-  local o = { name = nm(name), x = x, y = y, width = w, height = h }
+  local o = { name = nm(name), x = x, y = y, width = S(w), height = S(h) }
   if ADJ then
     o.titleText = title
     o.titleTxtColor = TITLE_FG
     o.adjLabelstyle = PANEL_BG
-    o.buttonFontSize = 9
+    o.buttonFontSize = tonumber(PT(9))
     o.padding = 6
   end
   local ok, c = pcall(function() return Container:new(o) end)
-  if not ok then c = Geyser.Container:new({ name = nm(name), x = x, y = y, width = w, height = h }) end
+  if not ok then c = Geyser.Container:new({ name = nm(name), x = x, y = y, width = S(w), height = S(h) }) end
   H.containers[#H.containers + 1] = c
   return c
 end
@@ -126,6 +136,28 @@ local function setGauge(g, cur, max, label, pair)
   g:setValue(num(cur), num(max, 1), "<center>" .. label .. "</center>")
   g.front:setStyleSheet("background-color:" .. grad(pair[1], pair[2]) .. "; border-radius:5px;")
   g.back:setStyleSheet("background-color:#20262f; border:1px solid #2b3140; border-radius:5px;")
+  -- Re-apply the scaled font each refresh so `ui scale` takes effect live.
+  pcall(function()
+    g.text:setStyleSheet("color:#f8fafc; font-weight:bold; font-family:" .. FONT ..
+      "; font-size:" .. PT(9) .. "pt;")
+  end)
+end
+
+-- Content width/height of a panel from its LIVE pixel size, so children reflow
+-- when the panel is dragged-resized or the client runs at a different
+-- resolution (instead of staying pinned to hardcoded pixel widths).
+local PANEL_PAD = 8
+function H.cw(c)
+  local w = 0
+  if c then pcall(function() w = c:get_width() end) end
+  if not w or w <= 0 then w = (c and c.width) or 300 end
+  return math.max(60, math.floor(w) - 2 * PANEL_PAD)
+end
+function H.ch(c)
+  local h = 0
+  if c then pcall(function() h = c:get_height() end) end
+  if not h or h <= 0 then h = (c and c.height) or 120 end
+  return math.max(30, math.floor(h) - (H.top or 26) - 8)
 end
 
 -- Lazy pool of Geyser.Labels reused across refreshes.
@@ -155,8 +187,8 @@ local function tpNumberStyle(l)
 end
 local function tpNumberHTML(tp)
   local col = tp >= 100 and "#fbbf24" or "#2dd4bf"
-  return "<center><span style='color:#8ea0bf; font-size:8pt'>TP</span><br>" ..
-    "<span style='color:" .. col .. "; font-weight:bold; font-size:15pt'>" .. tp .. "</span></center>"
+  return "<center><span style='color:#8ea0bf; font-size:" .. PT(8) .. "pt'>TP</span><br>" ..
+    "<span style='color:" .. col .. "; font-weight:bold; font-size:" .. PT(15) .. "pt'>" .. tp .. "</span></center>"
 end
 
 -- Positions/sizes a horizontal row of widgets, hiding any marked !visible and
@@ -198,6 +230,7 @@ local CFG_PATH = getMudletHomeDir() .. "/NorrathHUD_cfg.lua"
 
 local function defaultCfg()
   return {
+    scale = 1.0,                                    -- global size/font multiplier (per machine)
     v_mn = true, v_mv = true, v_tp = true,          -- which vitals gauges show
     v_num = true, v_pct = false, v_lbl = true,      -- vitals gauge text content
     p_mp = true, p_tp = true, p_num = true, p_pct = false, p_lbl = true, -- party
@@ -356,6 +389,8 @@ function H.build()
     { chk("v_num", "Show Numbers"), toggler("v_num", H.updateVitals) },
     { chk("v_pct", "Show Percent"), toggler("v_pct", H.updateVitals) },
     { chk("v_lbl", "Show Labels"), toggler("v_lbl", H.updateVitals) },
+    { "Bigger (scale +)", function() H.command("scale " .. string.format("%.2f", (H.cfg.scale or 1) + 0.1)) end },
+    { "Smaller (scale -)", function() H.command("scale " .. string.format("%.2f", (H.cfg.scale or 1) - 0.1)) end },
   })
 
   H.cTarget = panel("nhTarget", "2%", "20%", 566, ADJ and 52 or 30, "Target")
@@ -438,6 +473,11 @@ function H.updateVitals()
   H.cVitals:show()
   local v = H.gmcp("Char.Vitals") or {}
   local b = H.gmcp("Char.Base") or {}
+  pcall(function()
+    H.header:setStyleSheet("color:#e2e8f0; font-weight:bold; font-family:" .. FONT ..
+      "; font-size:" .. PT(10) .. "pt; qproperty-alignment:'AlignLeft|AlignVCenter';")
+  end)
+  H.header:resize(H.cw(H.cVitals), S(15))
   H.header:echo((b.name or "?") .. "  &#183;  Lvl " .. tostring(b.level or 0) ..
     (b.class and ("  &#183;  " .. tostring(b.class)) or ""))
   setGauge(H.gHP, v.hp, v.maxhp,
@@ -448,11 +488,12 @@ function H.updateVitals()
     gaugeText("MV", v.movement, v.maxmove, H.cfg.v_lbl, H.cfg.v_num, H.cfg.v_pct), GRAD.mv)
   H.tpNum:echo(tpNumberHTML(num(v.tp)))
 
-  layoutRow(8, 550, 6, {
-    { widget = H.gHP, weight = 170, visible = true, y = H.top + 18, height = 22 },
-    { widget = H.gMN, weight = 170, visible = H.cfg.v_mn and num(v.maxmana) > 0, y = H.top + 18, height = 22 },
-    { widget = H.gMV, weight = 132, visible = H.cfg.v_mv, y = H.top + 18, height = 22 },
-    { widget = H.tpNum, weight = 60, visible = H.cfg.v_tp, y = H.top + 16, height = 26 },
+  local gy, gh = H.top + S(18), S(22)
+  layoutRow(8, H.cw(H.cVitals), 6, {
+    { widget = H.gHP, weight = 170, visible = true, y = gy, height = gh },
+    { widget = H.gMN, weight = 170, visible = H.cfg.v_mn and num(v.maxmana) > 0, y = gy, height = gh },
+    { widget = H.gMV, weight = 132, visible = H.cfg.v_mv, y = gy, height = gh },
+    { widget = H.tpNum, weight = 60, visible = H.cfg.v_tp, y = H.top + S(16), height = S(26) },
   })
 end
 
@@ -462,6 +503,8 @@ function H.updateTarget()
   local t = H.gmcp("Char.Target") or {}
   if t.active then
     H.cTarget:show()
+    H.gTarget:move(8, H.top)
+    H.gTarget:resize(H.cw(H.cTarget), S(22))
     setGauge(H.gTarget, t.hp, t.maxhp, targetText(t), hpGrad(t.hp, t.maxhp))
   else
     H.cTarget:hide()
@@ -474,38 +517,43 @@ function H.updateParty()
   H.cParty:show()
   local members = H.gmcp("Group.Members")
   if type(members) ~= "table" then members = {} end
-  local rowH, gap = 28, 4
+  local rowH, gap = S(28), S(4)
+  local nameW = S(96)
+  local gaugesX = 6 + nameW + 4
+  local gaugesW = math.max(60, H.cw(H.cParty) - nameW - 10)
+  local gh = math.max(8, rowH - S(6))
   local i = 0
   for _, m in ipairs(members) do
     i = i + 1
     local y = H.partyTop + (i - 1) * (rowH + gap)
 
     -- Name / class block (left, fixed width).
-    local nameLbl = H.poolLabel(H.pName, i, H.cParty, 6, y, 92, rowH)
+    local nameLbl = H.poolLabel(H.pName, i, H.cParty, 6, y, nameW, rowH)
     nameLbl:setStyleSheet("background-color:#141824; border:1px solid #262c3a; border-radius:5px;" ..
       " padding-left:5px; qproperty-alignment:'AlignLeft|AlignVCenter';")
-    nameLbl:echo(string.format("<b>%s%s</b><br><span style='color:#8ea0bf; font-size:7pt'>Lv%s %s</span>",
-      m["self"] and "&#9670; " or "", tostring(m.name or "?"), tostring(m.level or 0),
-      tostring(m.class or "")))
+    nameLbl:echo(string.format(
+      "<b style='font-size:%spt'>%s%s</b><br><span style='color:#8ea0bf; font-size:%spt'>Lv%s %s</span>",
+      PT(9), m["self"] and "&#9670; " or "", tostring(m.name or "?"),
+      PT(7), tostring(m.level or 0), tostring(m.class or "")))
 
-    -- HP / MP / TP repack dynamically into the remaining width.
-    local hp = H.poolGauge(H.pHP, i, H.cParty, 102, y + 3, 150, rowH - 6)
+    -- HP / MP / TP repack dynamically into the remaining (live) width.
+    local hp = H.poolGauge(H.pHP, i, H.cParty, gaugesX, y + S(3), 150, gh)
     setGauge(hp, m.hp, m.maxhp,
       gaugeText("HP", m.hp, m.maxhp, H.cfg.p_lbl, H.cfg.p_num, H.cfg.p_pct), hpGrad(m.hp, m.maxhp))
 
-    local mp = H.poolGauge(H.pMP, i, H.cParty, 256, y + 3, 150, rowH - 6)
+    local mp = H.poolGauge(H.pMP, i, H.cParty, gaugesX, y + S(3), 150, gh)
     if num(m.maxmana) > 0 then
       setGauge(mp, m.mana, m.maxmana,
         gaugeText("MP", m.mana, m.maxmana, H.cfg.p_lbl, H.cfg.p_num, H.cfg.p_pct), GRAD.mn)
     end
 
-    local tp = H.poolLabel(H.pTP, i, H.cParty, 410, y, 56, rowH)
+    local tp = H.poolLabel(H.pTP, i, H.cParty, gaugesX, y, 56, rowH)
     tpNumberStyle(tp)
     tp:echo(tpNumberHTML(num(m.tp)))
 
-    layoutRow(102, 364, 4, {
-      { widget = hp, weight = 150, visible = true, y = y + 3, height = rowH - 6 },
-      { widget = mp, weight = 150, visible = H.cfg.p_mp and num(m.maxmana) > 0, y = y + 3, height = rowH - 6 },
+    layoutRow(gaugesX, gaugesW, S(4), {
+      { widget = hp, weight = 150, visible = true, y = y + S(3), height = gh },
+      { widget = mp, weight = 150, visible = H.cfg.p_mp and num(m.maxmana) > 0, y = y + S(3), height = gh },
       { widget = tp, weight = 56, visible = H.cfg.p_tp, y = y, height = rowH },
     })
   end
@@ -521,12 +569,13 @@ function H.updateEnemies()
   H.cEnemies:show()
   local e = H.gmcp("Char.Enemies") or {}
   local foes = e.enemies or {}
-  local rowH = H.cfg.e_compact and 22 or 26
-  local gap = H.cfg.e_compact and 2 or 4
+  local rowH = S(H.cfg.e_compact and 22 or 26)
+  local gap = S(H.cfg.e_compact and 2 or 4)
+  local rowW = H.cw(H.cEnemies)
   local y, i = H.enemiesTop, 0
   for _, foe in ipairs(foes) do
     i = i + 1
-    local l = H.poolLabel(H.enemyPool, i, H.cEnemies, 8, y, 256, rowH)
+    local l = H.poolLabel(H.enemyPool, i, H.cEnemies, 8, y, rowW, rowH)
     l:setStyleSheet(btnStyle("#f87171"))
     local dot = foe.target and "<span style='color:#f87171'>&#9654;</span> " or ""
     local pctTxt = ""
@@ -553,12 +602,13 @@ function H.updatePets()
   H.cPets:show()
   local p = H.gmcp("Char.Pets") or {}
   local pets = p.pets or {}
-  local rowH = H.cfg.pt_compact and 22 or 26
-  local gap = H.cfg.pt_compact and 2 or 4
+  local rowH = S(H.cfg.pt_compact and 22 or 26)
+  local gap = S(H.cfg.pt_compact and 2 or 4)
+  local rowW = H.cw(H.cPets)
   local y, i = H.petsTop, 0
   for _, pet in ipairs(pets) do
     i = i + 1
-    local l = H.poolLabel(H.petPool, i, H.cPets, 8, y, 256, rowH)
+    local l = H.poolLabel(H.petPool, i, H.cPets, 8, y, rowW, rowH)
     l:setStyleSheet(btnStyle("#a78bfa"))
     local dot = pet.active and "<span style='color:#a78bfa'>&#9654;</span> " or ""
     local pctTxt = ""
@@ -573,13 +623,14 @@ function H.updatePets()
     y = y + rowH + gap
   end
   hideFrom(H.petPool, i + 1)
+  local bw, bh, step = S(40), S(24), S(43)
   local x = 8
   for j, c in ipairs(PET_CMDS) do
-    local b = H.poolLabel(H.petCmdPool, j, H.cPets, x, y + 4, 40, 24)
+    local b = H.poolLabel(H.petCmdPool, j, H.cPets, x, y + S(4), bw, bh)
     b:setStyleSheet(btnStyle("#22c55e"):gsub("AlignLeft", "AlignHCenter"))
     b:echo(c[1])
     b:setClickCallback(function() send(c[2]) end)
-    x = x + 43
+    x = x + step
   end
   hideFrom(H.petCmdPool, #PET_CMDS + 1)
 end
@@ -592,12 +643,13 @@ function H.updateAbilities()
   local rows = {}
   for _, s in ipairs(a.spells or {}) do rows[#rows + 1] = { s.name or s.cmd, s.cmd, "#38bdf8" } end
   for _, s in ipairs(a.weaponskills or {}) do rows[#rows + 1] = { s.name or s.cmd, s.cmd, "#fbbf24" } end
-  local rowH = H.cfg.a_compact and 22 or 26
-  local gap = H.cfg.a_compact and 2 or 4
+  local rowH = S(H.cfg.a_compact and 22 or 26)
+  local gap = S(H.cfg.a_compact and 2 or 4)
+  local rowW = H.cw(H.cAbil)
   local y, i = H.abilTop, 0
   for _, r in ipairs(rows) do
     i = i + 1
-    local l = H.poolLabel(H.abilPool, i, H.cAbil, 8, y, 192, rowH)
+    local l = H.poolLabel(H.abilPool, i, H.cAbil, 8, y, rowW, rowH)
     l:setStyleSheet(btnStyle(r[3]))
     l:echo("<span style='color:" .. r[3] .. "'>&#9670;</span> " .. tostring(r[1]))
     local cmd = r[2]
@@ -619,10 +671,10 @@ function H.updateMap()
     return
   end
 
-  local cell, gap = H.mapCell, H.mapGap
+  local cell, gap = S(H.mapCell), H.mapGap
   local step = cell + gap
-  local cols = math.max(1, math.floor(H.mapContentW / step))
-  local rows = math.max(1, math.floor(H.mapContentH / step))
+  local cols = math.max(1, math.floor(H.cw(H.cMap) / step))
+  local rows = math.max(1, math.floor(H.ch(H.cMap) / step))
   local centerCol, centerRow = math.floor(cols / 2), math.floor(rows / 2)
 
   local center = nil
@@ -687,6 +739,38 @@ function H.refreshAll()
   for _, fn in pairs(H.updaters) do fn() end
 end
 
+-- Re-flow a panel's children when the user drag-resizes it. Mudlet's
+-- Adjustable.Container emits no per-instance resize event, so we poll each
+-- panel's live pixel size on a light timer and re-run only the updaters whose
+-- panel actually changed (children are positioned from the panel's live width,
+-- so re-running relays them out at the new size).
+function H.startResizeWatch()
+  if H.resizeTimer then pcall(killTimer, H.resizeTimer) end
+  H.lastSize = {}
+  local function tick()
+    if not H.built then return end
+    for k, c in pairs(H.windows or {}) do
+      if c and H.winVisible[k] ~= false then
+        local w, h = 0, 0
+        pcall(function() w = c:get_width(); h = c:get_height() end)
+        local prev = H.lastSize[k]
+        if not prev then
+          H.lastSize[k] = { w = w, h = h }          -- first sight: initial layout already ran
+        elseif prev.w ~= w or prev.h ~= h then
+          H.lastSize[k] = { w = w, h = h }
+          local fn = H.updaters[k]
+          if fn then pcall(fn) end
+        end
+      end
+    end
+  end
+  local function loop()
+    tick()
+    H.resizeTimer = tempTimer(0.4, loop)
+  end
+  loop()
+end
+
 -- ---------------------------------------------------------------------------
 -- panel visibility / positions (used by the `ui` command suite below)
 -- ---------------------------------------------------------------------------
@@ -721,7 +805,7 @@ function H.resetPositions()
     local d = base and H.panelDefaults[base]
     if c and d then
       pcall(function() c:move(d.x, d.y) end)
-      pcall(function() c:resize(d.w, d.h) end)
+      pcall(function() c:resize(S(d.w), S(d.h)) end)
     end
   end
 end
@@ -737,6 +821,7 @@ local HELP_LINES = {
   "  ui reload [path]- dev: hot-reload from your working-copy .lua (set path once)",
   "  update ui       - same as 'ui reload' (hot-reload from your working copy)",
   "  ui refresh      - refresh all panels from current GMCP state",
+  "  ui scale <n>    - size the whole HUD for your screen (e.g. 1.25; try 0.8-1.6)",
   "  ui reset        - reset config + panel positions to defaults",
   "  ui show|showall - show every panel",
   "  ui close|hide   - hide every panel",
@@ -751,6 +836,19 @@ function H.command(rest)
 
   if cmd == "" or cmd == "help" then
     for _, line in ipairs(HELP_LINES) do cecho("<cyan>" .. line .. "\n") end
+  elseif cmd == "scale" or cmd == "font" or cmd == "size" then
+    local f = tonumber(arg)
+    if not f then
+      cecho("<cyan>[Norrath HUD] scale is " .. tostring(H.cfg.scale or 1) ..
+        ". Usage: |wui scale <n>|n (e.g. ui scale 1.25; bigger = larger fonts + panels).\n")
+      return
+    end
+    H.cfg.scale = math.max(0.5, math.min(3.0, f))
+    H.saveCfg()
+    H.resetPositions()   -- re-apply panel sizes at the new scale
+    H.refreshAll()
+    cecho("<green>[Norrath HUD] scale set to " .. H.cfg.scale ..
+      ". Panels resized -- drag to taste, or 'ui reset' to re-center.\n")
   elseif cmd == "reload" then
     -- Dev hot-reload is opt-in and machine-local: point it at your working-copy
     -- .lua with `ui reload <path>` once (persists in NorrathHUD.devPath for the
@@ -808,6 +906,8 @@ on("gmcp.Char.Enemies", function() H.updateEnemies() end)
 on("gmcp.Char.Pets", function() H.updatePets() end)
 on("gmcp.Char.Abilities", function() H.updateAbilities() end)
 on("gmcp.Room.Map", function() H.updateMap() end)
+-- Main-window / resolution change: reflow everything to the new geometry.
+on("sysWindowResizeEvent", function() H.refreshAll() end)
 
 -- `ui` / `hud` alias, reload-safe (kill any alias from a previous generation).
 if H.aliasIds then
@@ -831,4 +931,5 @@ H.gen = (H.gen or 0) + 1
 H.built = false
 H.build()
 H.refreshAll()
-cecho("<green>[Norrath HUD]<reset> v5 loaded (Map panel added). Right-click a panel to configure it, or type 'ui help'.\n")
+H.startResizeWatch()  -- reflow children when a panel is drag-resized
+cecho("<green>[Norrath HUD]<reset> v6 loaded (resizable panels + 'ui scale'). Right-click a panel to configure it, or type 'ui help'.\n")
