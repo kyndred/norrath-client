@@ -5,7 +5,7 @@
 -- A Geyser HUD fed entirely by the server's GMCP. Each panel is a draggable,
 -- resizable, self-persisting Adjustable.Container with a titled frame.
 --
---   gmcp.Char.Vitals   -> HP / MN / MV / TP gauges (gradient, overlaid text)
+--   gmcp.Char.Vitals   -> HP / MN / MV / TP gauges + full-width TNL bar
 --   gmcp.Char.Base     -> name / level header
 --   gmcp.Group.Members -> party rows (HP + TP) + live x/y/z/room/zone (Map overlay)
 --   gmcp.Char.Target   -> target HP bar (hidden when no target)
@@ -55,6 +55,7 @@ local GRAD = {
   mv    = { "#a3e635", "#4d7c0f" },
   tp    = { "#2dd4bf", "#0d9488" },
   tp_rdy = { "#fbbf24", "#f59e0b" },
+  xp    = { "#c084fc", "#7c3aed" },
 }
 
 local function hpGrad(cur, mx)
@@ -248,7 +249,7 @@ local function defaultCfg()
     scale = 1.0,                                    -- legacy global (migrated into pscale below)
     pscale = { vitals = 1, party = 1, target = 1,   -- per-panel size/font multipliers
                enemies = 1, pets = 1, abilities = 1, map = 1 },
-    v_mn = true, v_mv = true, v_tp = true,          -- which vitals gauges show
+    v_mn = true, v_mv = true, v_tp = true, v_xp = true, -- which vitals gauges show
     v_num = true, v_pct = false, v_lbl = true,      -- vitals gauge text content
     p_mp = true, p_tp = true, p_num = true, p_pct = false, p_lbl = true, -- party
     t_num = true, t_pct = false, t_lbl = true,      -- target
@@ -288,6 +289,16 @@ local function gaugeText(short, cur, max, showLbl, showNum, showPct)
   if showLbl then parts[#parts + 1] = short end
   if showNum then parts[#parts + 1] = num(cur) .. "/" .. num(max, 1) end
   if showPct then parts[#parts + 1] = "(" .. math.floor(frac(cur, max) * 100) .. "%)" end
+  return table.concat(parts, "  ")
+end
+
+-- TNL bar text: "TNL 12345 (63%)" -- the number is xp still owed to ding, not
+-- xp-into-level, honoring the same label / numbers / percent toggles.
+local function tnlText(tnl, pct, showLbl, showNum, showPct)
+  local parts = {}
+  if showLbl then parts[#parts + 1] = "TNL" end
+  if showNum then parts[#parts + 1] = num(tnl) end
+  if showPct then parts[#parts + 1] = "(" .. num(pct) .. "%)" end
   return table.concat(parts, "  ")
 end
 
@@ -485,8 +496,9 @@ function H.build()
   local top = ADJ and 26 or 4  -- leave room for the panel's title bar
   H.top = top
 
-  -- Vitals: horizontal HP / MN / MV bars + TP as a number (FFXI-style).
-  H.cVitals = panel("nhVitals", "2%", "3%", 566, ADJ and 68 or 46, "Vitals")
+  -- Vitals: horizontal HP / MN / MV bars + TP as a number (FFXI-style), then a
+  -- full-width TNL (experience-to-next-level) bar spanning the panel below them.
+  H.cVitals = panel("nhVitals", "2%", "3%", 566, ADJ and 92 or 70, "Vitals")
   H.header = Geyser.Label:new({ name = nm("nhHeader"), x = 8, y = top, width = 550, height = 15 }, H.cVitals)
   H.header:setStyleSheet("color:#e2e8f0; font-weight:bold; font-family:" .. FONT ..
     "; font-size:10pt; qproperty-alignment:'AlignLeft|AlignVCenter';")
@@ -495,10 +507,13 @@ function H.build()
   H.gMV = gauge("nhMV", H.cVitals, 360, top + 18, 132, 22)
   H.tpNum = Geyser.Label:new({ name = nm("nhTP"), x = 498, y = top + 16, width = 60, height = 26 }, H.cVitals)
   tpNumberStyle(H.tpNum)
+  -- TNL bar: its own full-width row under the HP/MN/MV/TP row.
+  H.gXP = gauge("nhXP", H.cVitals, 8, top + 44, 550, 16)
   addMenu(H.cVitals, {
     { chk("v_mn", "Show Mana"), toggler("v_mn", H.updateVitals) },
     { chk("v_mv", "Show Movement"), toggler("v_mv", H.updateVitals) },
     { chk("v_tp", "Show TP"), toggler("v_tp", H.updateVitals) },
+    { chk("v_xp", "Show TNL"), toggler("v_xp", H.updateVitals) },
     { chk("v_num", "Show Numbers"), toggler("v_num", H.updateVitals) },
     { chk("v_pct", "Show Percent"), toggler("v_pct", H.updateVitals) },
     { chk("v_lbl", "Show Labels"), toggler("v_lbl", H.updateVitals) },
@@ -610,6 +625,8 @@ function H.updateVitals()
   setGauge(H.gMV, v.movement, v.maxmove,
     gaugeText("MV", v.movement, v.maxmove, H.cfg.v_lbl, H.cfg.v_num, H.cfg.v_pct), GRAD.mv)
   H.tpNum:echo(tpNumberHTML(num(v.tp)))
+  setGauge(H.gXP, v.xp, v.maxxp,
+    tnlText(v.tnl, v.xp_pct, H.cfg.v_lbl, H.cfg.v_num, H.cfg.v_pct), GRAD.xp)
 
   local gy, gh = H.top + S(18), S(22)
   layoutRow(8, H.cw(H.cVitals), 6, {
@@ -619,6 +636,14 @@ function H.updateVitals()
     -- TP sits inline with the bars: same y and height as the gauges.
     { widget = H.tpNum, weight = 64, visible = H.cfg.v_tp, y = gy, height = gh },
   })
+  -- TNL spans the full content width on its own row just below the gauges.
+  if H.cfg.v_xp then
+    H.gXP:show()
+    H.gXP:move(8, gy + gh + S(4))
+    H.gXP:resize(H.cw(H.cVitals), S(16))
+  else
+    H.gXP:hide()
+  end
 end
 
 function H.updateTarget()
