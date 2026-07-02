@@ -1,5 +1,6 @@
 -----------------------------------------------------------------------------
--- Norrath HUD  --  Mudlet package  (v6: Map colour pass + bold you-are-here)
+-- Norrath HUD  --  Mudlet package  (v9: Map exit connectors -- draw passages
+-- between rooms so a real link reads distinctly from mere grid adjacency)
 --
 -- A Geyser HUD fed entirely by the server's GMCP. Each panel is a draggable,
 -- resizable, self-persisting Adjustable.Container with a titled frame.
@@ -408,6 +409,68 @@ local function mapTooltipHtml(room)
   return table.concat(lines, "<br>")
 end
 
+-- Colour of exit connectors on the map. Muted slate so the room cells and
+-- marker glyphs stay the focus, but bright enough to read against the panel.
+local LINK_COLOUR = "#6b7688"
+
+-- Draw every exit connector for the rooms currently placed on the map. Each
+-- edge is derived from a room's `exits` (dir -> destination id): if the
+-- destination is also on screen we drop a thin bar (cardinal) or a diagonal
+-- box-drawing glyph (ne/nw/se/sw) into the gap between the two cells, so a real
+-- passage is visually distinct from two rooms that merely sit next to each
+-- other on the grid. Pairs are de-duped so a two-way exit draws one line.
+-- `pos` maps room id -> { x, y } top-left; `cell`/`step` are the current cell
+-- size and cell+gap stride (both already UI-scaled).
+function H.drawMapLinks(rm, pos, cell, step)
+  local t = math.max(2, math.floor(cell / 8))  -- connector thickness, scales
+  local half = cell / 2
+  local seen = {}
+  local k = 0
+  for _, r in ipairs(rm.rooms) do
+    local a = pos[r.id]
+    if a and type(r.exits) == "table" then
+      for _, destId in pairs(r.exits) do
+        local b = pos[destId]
+        if b and destId ~= r.id then
+          local key = (r.id < destId) and (r.id .. "-" .. destId) or (destId .. "-" .. r.id)
+          if not seen[key] then
+            seen[key] = true
+            local ddx, ddy = b.x - a.x, b.y - a.y
+            k = k + 1
+            if ddy == 0 and ddx ~= 0 then          -- east/west
+              local left = math.min(a.x, b.x)
+              local l = H.poolLabel(H.mapLinkPool, k, H.cMap,
+                left + cell, a.y + half - math.floor(t / 2), math.abs(ddx) - cell, t)
+              l:setStyleSheet("QLabel{ background-color:" .. LINK_COLOUR .. "; border-radius:1px; }")
+              l:echo("")
+            elseif ddx == 0 and ddy ~= 0 then      -- north/south
+              local top = math.min(a.y, b.y)
+              local l = H.poolLabel(H.mapLinkPool, k, H.cMap,
+                a.x + half - math.floor(t / 2), top + cell, t, math.abs(ddy) - cell)
+              l:setStyleSheet("QLabel{ background-color:" .. LINK_COLOUR .. "; border-radius:1px; }")
+              l:echo("")
+            else                                   -- diagonal
+              -- Box-drawing glyph centered on the midpoint of the two cells.
+              -- Same sign on both deltas => top-left<->bottom-right (\), else /.
+              local glyph = ((ddx > 0) == (ddy > 0)) and "&#9586;" or "&#9585;"
+              local mx = (a.x + b.x) / 2 + half
+              local my = (a.y + b.y) / 2 + half
+              local d = step
+              local fs = tostring(math.max(6, math.floor(step * 0.9)))
+              local l = H.poolLabel(H.mapLinkPool, k, H.cMap,
+                mx - d / 2, my - d / 2, d, d)
+              l:setStyleSheet("QLabel{ background-color:transparent; color:" .. LINK_COLOUR ..
+                "; font-size:" .. fs .. "pt; qproperty-alignment:'AlignCenter'; }")
+              l:echo(glyph)
+            end
+          end
+        end
+      end
+    end
+  end
+  hideFrom(H.mapLinkPool, k + 1)
+end
+
 -- ---------------------------------------------------------------------------
 -- build (runs once per hot-reload generation)
 -- ---------------------------------------------------------------------------
@@ -499,11 +562,15 @@ function H.build()
   -- member overlays.
   H.cMap = panel("nhMap", "2%", "57%", 600, 280, "Map")
   H.mapTop = top
-  H.mapCell = 26
-  H.mapGap = 2
+  -- Wider gap than a hairline: the empty space between cells is where exit
+  -- connectors ("- | / \" on the ASCII map) are drawn, so it needs to be big
+  -- enough to read. Smaller cells keep roughly the same rooms-on-screen count.
+  H.mapCell = 22
+  H.mapGap = 10
   H.mapContentW = 600 - 16
   H.mapContentH = 280 - top - 10
   H.mapPool = { prefix = "nhMapCell" }
+  H.mapLinkPool = { prefix = "nhMapLink" }
   H.mapPartyPool = { prefix = "nhMapParty" }
   addMenu(H.cMap, scaleMenuItems("map"))
 
@@ -730,6 +797,7 @@ function H.updateMap()
   local rm = H.gmcp("Room.Map")
   if type(rm) ~= "table" or type(rm.rooms) ~= "table" or #rm.rooms == 0 then
     hideFrom(H.mapPool, 1)
+    hideFrom(H.mapLinkPool, 1)
     hideFrom(H.mapPartyPool, 1)
     return
   end
@@ -746,8 +814,10 @@ function H.updateMap()
   end
   center = center or { x = 0, y = 0, z = rm.z }
 
+  -- Pass 1: place every visible room on the grid (positions only). Links are
+  -- drawn next so the cells, created last, sit on top of them.
   H.mapCellPos = {}
-  local i = 0
+  local placed = {}
   for _, r in ipairs(rm.rooms) do
     if (r.z or 0) == (rm.z or 0) then
       local dx = (r.x or 0) - (center.x or 0)
@@ -755,22 +825,32 @@ function H.updateMap()
       local col = centerCol + dx
       local row = centerRow - dy -- north (+y) is up on screen
       if col >= 0 and col < cols and row >= 0 and row < rows then
-        i = i + 1
         local x = 8 + col * step
         local y = H.mapTop + row * step
-        local isCenter = (r.id == rm.center)
-        local l = H.poolLabel(H.mapPool, i, H.cMap, x, y, cell, cell)
-        l:setStyleSheet(roomCellStyle(r, isCenter))
-        l:echo("<center>" .. cellGlyph(r, isCenter) .. "</center>")
-        l:setToolTip(mapTooltipHtml(r))
-        local rid, entered = r.id, r.entered
-        l:setClickCallback(function()
-          if entered then send("travelto " .. tostring(rid))
-          else cecho("<red>[Map] You haven't been there.\n") end
-        end)
         H.mapCellPos[r.id] = { x = x, y = y }
+        placed[#placed + 1] = r
       end
     end
+  end
+
+  -- Exit connectors between placed rooms (drawn under the cells).
+  H.drawMapLinks(rm, H.mapCellPos, cell, step)
+
+  -- Pass 2: the room cells themselves.
+  local i = 0
+  for _, r in ipairs(placed) do
+    local pos = H.mapCellPos[r.id]
+    i = i + 1
+    local isCenter = (r.id == rm.center)
+    local l = H.poolLabel(H.mapPool, i, H.cMap, pos.x, pos.y, cell, cell)
+    l:setStyleSheet(roomCellStyle(r, isCenter))
+    l:echo("<center>" .. cellGlyph(r, isCenter) .. "</center>")
+    l:setToolTip(mapTooltipHtml(r))
+    local rid, entered = r.id, r.entered
+    l:setClickCallback(function()
+      if entered then send("travelto " .. tostring(rid))
+      else cecho("<red>[Map] You haven't been there.\n") end
+    end)
   end
   hideFrom(H.mapPool, i + 1)
 
@@ -1015,4 +1095,4 @@ H.built = false
 H.build()
 H.refreshAll()
 H.startResizeWatch()  -- reflow children when a panel is drag-resized
-cecho("<green>[Norrath HUD]<reset> v8 loaded (per-panel scale + inline TP + resizable panels). Right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
+cecho("<green>[Norrath HUD]<reset> v9 loaded (map now draws exit connectors between rooms + per-panel scale). Right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
