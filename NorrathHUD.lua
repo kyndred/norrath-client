@@ -1,5 +1,5 @@
 -----------------------------------------------------------------------------
--- Norrath HUD  --  Mudlet package  (v5: fog-of-war Map panel)
+-- Norrath HUD  --  Mudlet package  (v6: Map colour pass + bold you-are-here)
 --
 -- A Geyser HUD fed entirely by the server's GMCP. Each panel is a draggable,
 -- resizable, self-persisting Adjustable.Container with a titled frame.
@@ -350,34 +350,45 @@ end
 local function roomCellStyle(room, isCenter)
   local border, bg
   if isCenter then
-    border, bg = "#22d3ee", "#0e3a44"
+    -- You-are-here: brightest, most saturated cell on the panel + a thick 3px
+    -- ring so it reads instantly against every other marker colour.
+    border, bg = "#5ff7ff", "#0b566b"
   elseif room.named then
-    border, bg = "#fbbf24", (room.entered and "#3a2e0d" or "#201a0a")
+    border, bg = "#fbbf24", (room.entered and "#42340e" or "#241d0b")
   elseif room.zoneexit then
-    border, bg = "#f87171", (room.entered and "#3a1414" or "#201010")
+    border, bg = "#f87171", (room.entered and "#421616" or "#241111")
   elseif room.vendor then
-    border, bg = "#60a5fa", (room.entered and "#0f2138" or "#0b1826")
+    border, bg = "#60a5fa", (room.entered and "#122845" or "#0d1b2c")
   elseif room.camp then
-    border, bg = "#fb923c", (room.entered and "#3a220d" or "#201609")
+    border, bg = "#fb923c", (room.entered and "#42260e" or "#24190a")
   elseif room.safe then
-    border, bg = "#34d399", (room.entered and "#0d2a20" or "#0a1c16")
+    border, bg = "#34d399", (room.entered and "#0f3227" or "#0b1f19")
   else
-    border = room.entered and "#3b4252" or "#262c3a"
-    bg = room.entered and "#171b26" or "#12151d"
+    -- Plain rooms: entered ("your trail") is noticeably lighter than a room
+    -- only glimpsed from afar, so your walked path stands out on the grid.
+    border = room.entered and "#556072" or "#2b3242"
+    bg = room.entered and "#1c2230" or "#12151d"
   end
+  local width = isCenter and "3px" or "2px"
   local style = "border-style:solid;"
   if not isCenter and (not room.entered or not room.fresh) then style = "border-style:dashed;" end
-  return "QLabel{ background-color:" .. bg .. "; border:2px " .. style ..
+  return "QLabel{ background-color:" .. bg .. "; border:" .. width .. " " .. style ..
     " border-color:" .. border .. "; border-radius:4px; }"
 end
 
--- Small center-aligned glyph for a room cell.
+-- Small center-aligned glyph for a room cell. Each glyph is tinted to match
+-- its marker colour so the panel reads as one coherent colour scheme; the
+-- player's own cell gets a bold, oversized, bright-cyan diamond.
+local function glyphSpan(colour, html, big)
+  local size = big and (" font-size:" .. PT(14) .. "pt;") or ""
+  return "<span style='color:" .. colour .. "; font-weight:bold;" .. size .. "'>" .. html .. "</span>"
+end
 local function cellGlyph(room, isCenter)
-  if isCenter then return "@" end
-  if room.named then return "&#9733;" end     -- star: named/rare mob seen here
-  if room.zoneexit then return "&#8593;" end   -- up-arrow: zone exit
-  if room.vendor then return "$" end
-  if room.camp then return "&#9679;" end       -- dot: ordinary creatures
+  if isCenter then return glyphSpan("#7ffaff", "&#9670;", true) end -- ◆ : you are here
+  if room.named then return glyphSpan("#fcd34d", "&#9733;") end     -- ★ : named/rare mob seen here
+  if room.zoneexit then return glyphSpan("#fca5a5", "&#8593;") end  -- ↑ : zone exit
+  if room.vendor then return glyphSpan("#93c5fd", "$") end          -- $ : vendor
+  if room.camp then return glyphSpan("#fdba74", "&#9679;") end      -- ● : ordinary creatures
   return ""
 end
 
@@ -764,7 +775,7 @@ function H.updateMap()
   hideFrom(H.mapPool, i + 1)
 
   -- Party overlay: small dots for same-zone group members (self is already
-  -- the centered "@" cell, so skip it here).
+  -- the centered you-are-here diamond, so skip it here).
   local members = H.gmcp("Group.Members")
   if type(members) ~= "table" then members = {} end
   local j = 0
