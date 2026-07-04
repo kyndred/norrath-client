@@ -1,6 +1,7 @@
 -----------------------------------------------------------------------------
--- Norrath HUD  --  Mudlet package  (v9: Map exit connectors -- draw passages
--- between rooms so a real link reads distinctly from mere grid adjacency)
+-- Norrath HUD  --  Mudlet package  (v10: Map panel gains a world/local toggle
+-- -- a pixel-tile world atlas (Room.Worldmap) rendered as decho background
+-- cells, alongside the existing fog-of-war local map)
 --
 -- A Geyser HUD fed entirely by the server's GMCP. Each panel is a draggable,
 -- resizable, self-persisting Adjustable.Container with a titled frame.
@@ -14,6 +15,8 @@
 --   gmcp.Char.Abilities-> clickable spell / weaponskill buttons
 --   gmcp.Room.Map      -> the character's revealed-room memory (fog of war) +
 --                         current vision radius; drives the Map panel below
+--   gmcp.Room.Worldmap -> the static pixel-tile atlas of the whole known world;
+--                         drives the Map panel's "world" toggle (FF-overworld)
 --
 -- Map panel: draws only rooms the character has ever seen (server-enforced
 -- fog of war via `char.room_memory`); rooms within current vision radius are
@@ -71,10 +74,10 @@ end
 -- `ui scale <panel> <n>` or its right-click Bigger/Smaller menu). `H.curScale`
 -- is the scale of the panel currently being laid out; panel()/each updater set
 -- it on entry, and S()/PT() read it.
-local PANEL_KEYS = { "vitals", "party", "target", "enemies", "pets", "abilities", "map" }
+local PANEL_KEYS = { "vitals", "party", "target", "enemies", "pets", "abilities", "buffs", "map" }
 local NAME2KEY = {
   nhVitals = "vitals", nhParty = "party", nhTarget = "target",
-  nhEnemies = "enemies", nhPets = "pets", nhAbil = "abilities", nhMap = "map",
+  nhEnemies = "enemies", nhPets = "pets", nhAbil = "abilities", nhBuffs = "buffs", nhMap = "map",
 }
 local function uiScale() return tonumber(H.curScale) or 1 end
 local function S(v) return math.max(1, math.floor(v * uiScale() + 0.5)) end
@@ -540,7 +543,7 @@ end
 -- ---------------------------------------------------------------------------
 H.windowBaseName = {
   vitals = "nhVitals", party = "nhParty", target = "nhTarget",
-  enemies = "nhEnemies", pets = "nhPets", abilities = "nhAbil", map = "nhMap",
+  enemies = "nhEnemies", pets = "nhPets", abilities = "nhAbil", buffs = "nhBuffs", map = "nhMap",
 }
 
 function H.build()
@@ -625,6 +628,16 @@ function H.build()
   })
   addMenu(H.cAbil, scaleMenuItems("abilities"))
 
+  -- Buffs: a column of active spell effects (name + remaining time), fed by
+  -- Char.Buffs. Read-only -- no click. Colour of the timer warns as it runs out.
+  H.cBuffs = panel("nhBuffs", "58%", "55%", 208, 200, "Buffs")
+  H.buffsTop = top
+  H.buffPool = { prefix = "nhBuff" }
+  addMenu(H.cBuffs, {
+    { chk("b_compact", "Compact"), toggler("b_compact", H.updateBuffs) },
+  })
+  addMenu(H.cBuffs, scaleMenuItems("buffs"))
+
   -- Map: fog-of-war grid of every room the character has ever seen, centered
   -- on their current room. Cell pool + a separate small-dot pool for party
   -- member overlays.
@@ -640,11 +653,42 @@ function H.build()
   H.mapPool = { prefix = "nhMapCell" }
   H.mapLinkPool = { prefix = "nhMapLink" }
   H.mapPartyPool = { prefix = "nhMapParty" }
+
+  -- World-atlas MiniConsole: fills the map area in "world" mode, drawn as
+  -- pixel tiles (two-space decho cells). Small font so the whole world fits.
+  H.mapMCFont = 5
+  local okMC, mc = pcall(function()
+    return Geyser.MiniConsole:new({
+      name = nm("nhMapWorld"), x = 8, y = top,
+      width = 600 - 16, height = 280 - top - 10,
+    }, H.cMap)
+  end)
+  if okMC and mc then
+    H.mapMC = mc
+    pcall(function() mc:setColor(0, 0, 0) end)
+    pcall(function() mc:setMiniConsoleFontSize(H.mapMCFont) end)
+    pcall(function() mc:setWrap(400) end)   -- never soft-wrap our tile rows
+    mc:hide()
+  end
+
+  -- Frame button: toggles local<->world. Sits at the top-right of the map
+  -- panel's content area (just below the title bar), styled like the HUD's
+  -- other little labels (btnStyle), and always labels the OTHER view (what
+  -- clicking switches to). Negative x anchors it to the panel's right edge so
+  -- it stays put when the panel is drag-resized.
+  H.mapModeBtn = Geyser.Label:new(
+    { name = nm("nhMapModeBtn"), x = -60, y = top, width = 52, height = 18 }, H.cMap)
+  H.mapModeBtn:setStyleSheet(btnStyle("#5ff7ff"):gsub("AlignLeft", "AlignHCenter"))
+  H.mapModeBtn:echo("<center><span style='color:#7ffaff'>world</span></center>")
+  H.mapModeBtn:setClickCallback(function()
+    H.setMapMode(H.mapMode == "world" and "local" or "world")
+  end)
+
   addMenu(H.cMap, scaleMenuItems("map"))
 
   H.windows = {
     vitals = H.cVitals, party = H.cParty, target = H.cTarget,
-    enemies = H.cEnemies, pets = H.cPets, abilities = H.cAbil, map = H.cMap,
+    enemies = H.cEnemies, pets = H.cPets, abilities = H.cAbil, buffs = H.cBuffs, map = H.cMap,
   }
   H.winVisible = H.winVisible or {}
   for k in pairs(H.windows) do
@@ -868,11 +912,164 @@ function H.updateAbilities()
   hideFrom(H.abilPool, i + 1)
 end
 
+-- Char.Buffs -> a plain column of active spell effects: name + time left. The
+-- timer colour warns as the buff runs down (green > 1m, amber > 18s, else red).
+function H.updateBuffs()
+  if not H.built then return end
+  if H.winVisible.buffs == false then H.cBuffs:hide(); return end
+  H.cBuffs:show()
+  useScale("buffs")
+  local b = H.gmcp("Char.Buffs") or {}
+  local buffs = b.buffs or {}
+  local rowH = S(H.cfg.b_compact and 20 or 24)
+  local gap = S(H.cfg.b_compact and 2 or 3)
+  local rowW = H.cw(H.cBuffs)
+  local y, i = H.buffsTop, 0
+  for _, buff in ipairs(buffs) do
+    i = i + 1
+    local l = H.poolLabel(H.buffPool, i, H.cBuffs, 8, y, rowW, rowH)
+    l:setStyleSheet(btnStyle("#c084fc"))
+    local secs = tonumber(buff.secs) or 0
+    local tcol = secs > 60 and "#34d399" or (secs > 18 and "#fbbf24" or "#ef4444")
+    local tstr
+    if secs >= 60 then
+      local m = math.floor(secs / 60)
+      local s = secs % 60
+      tstr = s > 0 and (m .. "m " .. s .. "s") or (m .. "m")
+    else
+      tstr = secs .. "s"
+    end
+    l:echo("<span style='color:#c084fc'>&#9670;</span> " .. tostring(buff.name or "?") ..
+      "  <span style='color:" .. tcol .. "'>" .. tstr .. "</span>")
+    l:setClickCallback(function() end)
+    y = y + rowH + gap
+  end
+  if i == 0 then
+    local l = H.poolLabel(H.buffPool, 1, H.cBuffs, 8, H.buffsTop, rowW, S(22))
+    l:setStyleSheet("QLabel{ color:#6b7280; font-family:" .. FONT ..
+      "; qproperty-alignment:'AlignLeft|AlignVCenter'; }")
+    l:echo("<span style='color:#6b7280'>(no active buffs)</span>")
+    l:setClickCallback(function() end)
+    i = 1
+  end
+  hideFrom(H.buffPool, i + 1)
+end
+
+-- ---------------------------------------------------------------------------
+-- World map view (Room.Worldmap): a pixel-tile atlas of the whole known world
+-- rendered into a MiniConsole in the map panel, toggled by the frame button.
+--
+-- The server sends one static, player-independent payload at connect:
+--   { cols, rows, scale, rows_enc = { <row string, one char/cell>, ... },
+--     palette = { [char] = {r,g,b} }, zones = { [zone_key] = {x,y,w,h} } }
+-- We paint each cell as TWO SPACES with a decho background colour so the grid
+-- reads as square pixels; when the grid is wider/taller than the console can
+-- hold we downsample (nearest-cell) so the whole world always fits.
+-- ---------------------------------------------------------------------------
+H.mapMode = H.mapMode or "local"      -- "local" (fog-of-war) or "world" (atlas)
+
+-- Look up a palette entry, defaulting to the ocean/space colour.
+local function wmColour(wm, ch)
+  local p = wm.palette and (wm.palette[ch] or wm.palette[" "])
+  if type(p) == "table" then return p.r or 17, p.g or 34, p.b or 68 end
+  return 17, 34, 68
+end
+
+-- Render the world atlas into the map MiniConsole. Downsamples the grid to the
+-- console's character capacity (each cell = two chars wide, one tall) and tints
+-- the player's current zone brighter so "you are here" stands out.
+function H.renderWorldMap()
+  local wm = H.worldMap
+  local mc = H.mapMC
+  if not mc then return end
+  mc:clear()
+  if type(wm) ~= "table" or type(wm.rows_enc) ~= "table" or #wm.rows_enc == 0 then
+    mc:decho("<170,180,200>world map not charted yet -- @reload pending\n")
+    return
+  end
+
+  -- Console char capacity from its live pixel size. At the small font we set
+  -- (H.mapMCFont pt), a char is roughly 0.62*pt wide and ~1.35*pt tall; those
+  -- factors are deliberately conservative so the whole world always fits with
+  -- a little margin rather than clipping at the edges.
+  local pw, ph = H.cw(H.cMap), H.ch(H.cMap)
+  pcall(function() pw = mc:get_width(); ph = mc:get_height() end)
+  local fpt = H.mapMCFont or 5
+  local charW = math.max(3, fpt * 0.62)
+  local charH = math.max(5, fpt * 1.35)
+  local capCols = math.max(10, math.floor(pw / charW))
+  local capRows = math.max(8, math.floor(ph / charH))
+  -- Two console chars per world cell horizontally, one row per cell vertically.
+  local maxCellCols = math.max(4, math.floor(capCols / 2))
+  local maxCellRows = math.max(4, capRows)
+
+  local srcCols, srcRows = wm.cols or #(wm.rows_enc[1] or ""), wm.rows or #wm.rows_enc
+  local colStep = math.max(1, math.ceil(srcCols / maxCellCols))
+  local rowStep = math.max(1, math.ceil(srcRows / maxCellRows))
+
+  -- Current zone rect (from Room.Info.zone) for the "you are here" highlight.
+  local here = H.gmcp("Room.Info")
+  local hz = here and here.zone
+  local zr = hz and wm.zones and wm.zones[hz]
+  local blink = (H.wmBlink and true) or false
+
+  for ry = 1, srcRows, rowStep do
+    local line = wm.rows_enc[ry] or ""
+    for rx = 1, srcCols, colStep do
+      local cellCh = line:sub(rx, rx)
+      if cellCh == "" then cellCh = " " end
+      local r, g, b = wmColour(wm, cellCh)
+      -- Inside the current zone's rect? brighten (and blink) so it pops.
+      if zr then
+        local zx, zy, zw, zh = zr[1], zr[2], zr[3], zr[4]
+        -- payload rects are 0-based cell coords; rows_enc is 1-based.
+        local cx, cy = rx - 1, ry - 1
+        if cx >= zx and cx < zx + zw and cy >= zy and cy < zy + zh then
+          if blink then
+            r, g, b = 255, 255, 255
+          else
+            r = math.min(255, r + 90); g = math.min(255, g + 90); b = math.min(255, b + 90)
+          end
+        end
+      end
+      mc:decho("<0,0,0:" .. r .. "," .. g .. "," .. b .. ">  ")
+    end
+    mc:decho("\n")
+  end
+end
+
+-- Toggle the map panel between the local fog-of-war grid and the world atlas.
+function H.setMapMode(mode)
+  H.mapMode = (mode == "world") and "world" or "local"
+  if H.mapModeBtn then
+    -- The button LABELS the OTHER view (what a click switches to).
+    H.mapModeBtn:echo(H.mapMode == "world"
+      and "<center><span style='color:#7ffaff'>local</span></center>"
+      or  "<center><span style='color:#7ffaff'>world</span></center>")
+  end
+  H.updateMap()
+end
+
 function H.updateMap()
   if not H.built then return end
   if H.winVisible.map == false then H.cMap:hide(); return end
   H.cMap:show()
   useScale("map")
+
+  -- World-atlas mode: hide the local-grid pools, show the MiniConsole atlas.
+  if H.mapMode == "world" then
+    hideFrom(H.mapPool, 1)
+    hideFrom(H.mapLinkPool, 1)
+    hideFrom(H.mapPartyPool, 1)
+    if H.mapMC then
+      H.mapMC:move(8, H.mapTop)
+      H.mapMC:resize(H.cw(H.cMap), H.ch(H.cMap))
+      H.mapMC:show()
+      H.renderWorldMap()
+    end
+    return
+  end
+  if H.mapMC then H.mapMC:hide() end
 
   local rm = H.gmcp("Room.Map")
   if type(rm) ~= "table" or type(rm.rooms) ~= "table" or #rm.rooms == 0 then
@@ -955,7 +1152,7 @@ end
 H.updaters = {
   vitals = H.updateVitals, party = H.updateParty, target = H.updateTarget,
   enemies = H.updateEnemies, pets = H.updatePets, abilities = H.updateAbilities,
-  map = H.updateMap,
+  buffs = H.updateBuffs, map = H.updateMap,
 }
 
 function H.refreshAll()
@@ -990,6 +1187,21 @@ function H.startResizeWatch()
   local function loop()
     tick()
     H.resizeTimer = tempTimer(0.4, loop)
+  end
+  loop()
+end
+
+-- Slow blink of the "you are here" zone highlight on the world atlas. Only
+-- repaints while the world view is actually visible, so it costs nothing in
+-- local mode or when the map panel is hidden.
+function H.startWorldBlink()
+  if H.wmBlinkTimer then pcall(killTimer, H.wmBlinkTimer) end
+  local function loop()
+    if H.built and H.mapMode == "world" and H.winVisible.map ~= false then
+      H.wmBlink = not H.wmBlink
+      pcall(H.renderWorldMap)
+    end
+    H.wmBlinkTimer = tempTimer(0.8, loop)
   end
   loop()
 end
@@ -1148,7 +1360,26 @@ on("gmcp.Char.Target", function() H.updateTarget() end)
 on("gmcp.Char.Enemies", function() H.updateEnemies() end)
 on("gmcp.Char.Pets", function() H.updatePets() end)
 on("gmcp.Char.Abilities", function() H.updateAbilities() end)
+on("gmcp.Char.Buffs", function() H.updateBuffs() end)
 on("gmcp.Room.Map", function() H.updateMap() end)
+-- World atlas (static, player-independent): cache it, and (re)paint if the
+-- world view is currently up.
+-- Package name: Evennia's GMCP encoder title-cases each underscore segment, so
+-- the server's `room_worldmap` send arrives on the wire as `Room.Worldmap`.
+on("gmcp.Room.Worldmap", function()
+  H.worldMap = H.gmcp("Room.Worldmap")
+  if H.mapMode == "world" then H.updateMap() end
+end)
+-- Room.Info carries the player's current zone; while the world atlas is up,
+-- re-render only when the zone actually changed (cheap "you are here" move).
+on("gmcp.Room.Info", function()
+  local ri = H.gmcp("Room.Info")
+  local z = ri and ri.zone
+  if z ~= H.lastZone then
+    H.lastZone = z
+    if H.mapMode == "world" then H.renderWorldMap() end
+  end
+end)
 -- Main-window / resolution change: reflow everything to the new geometry.
 on("sysWindowResizeEvent", function() H.refreshAll() end)
 
@@ -1217,7 +1448,12 @@ end
 H.containers = {}
 H.gen = (H.gen or 0) + 1
 H.built = false
+-- Capture the world atlas if it already arrived before this (re)build.
+H.worldMap = H.worldMap or H.gmcp("Room.Worldmap")
 H.build()
+-- Restore the previous map mode across hot-reloads (label the button correctly).
+H.setMapMode(H.mapMode)
 H.refreshAll()
 H.startResizeWatch()  -- reflow children when a panel is drag-resized
-cecho("<green>[Norrath HUD]<reset> v9 loaded (map now draws exit connectors between rooms + per-panel scale). Right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
+H.startWorldBlink()   -- blink the "you are here" zone on the world atlas
+cecho("<green>[Norrath HUD]<reset> v10 loaded (map panel gains a world/local toggle -- pixel-tile world atlas from Room.Worldmap). Click the world/local button on the map frame, right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
