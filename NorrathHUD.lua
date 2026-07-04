@@ -1152,6 +1152,51 @@ on("gmcp.Room.Map", function() H.updateMap() end)
 -- Main-window / resolution change: reflow everything to the new geometry.
 on("sysWindowResizeEvent", function() H.refreshAll() end)
 
+-- ---------------------------------------------------------------------------
+-- Companion-package auto-install
+--
+-- Mudlet's built-in Client.GUI handshake only carries ONE package (this HUD).
+-- The server therefore also advertises its sibling packages over GMCP
+-- `Client.Packages` = { packages = { {name, version, url}, ... } } -- the
+-- fishing widget, the cutscene overlay -- and the HUD installs/upgrades
+-- them: anything missing, or whose advertised version differs from the one
+-- recorded in the HUD config, is (re)installed from the public mirror.
+-- One attempt per package per session, so a failed download can't loop.
+-- ---------------------------------------------------------------------------
+function H.syncPackages()
+  local data = gmcp and gmcp.Client and gmcp.Client.Packages
+  if not data or type(data.packages) ~= "table" then return end
+  H.pkgTried = H.pkgTried or {}
+  H.cfg.pkgVersions = H.cfg.pkgVersions or {}
+  local installed = {}
+  for _, name in ipairs(getPackages and getPackages() or {}) do
+    installed[name] = true
+  end
+  for _, pkg in ipairs(data.packages) do
+    local name = pkg.name
+    local version = tostring(pkg.version or "1")
+    local url = pkg.url
+    if name and url and not H.pkgTried[name] then
+      local have = H.cfg.pkgVersions[name]
+      if not installed[name] or have ~= version then
+        H.pkgTried[name] = true
+        if installed[name] then pcall(uninstallPackage, name) end
+        cecho("<cyan>[Norrath HUD] installing companion package " .. name ..
+          " v" .. version .. "...\n")
+        local ok = pcall(installPackage, url)
+        if ok then
+          H.cfg.pkgVersions[name] = version
+          H.saveCfg()
+        else
+          cecho("<red>[Norrath HUD] could not install " .. name ..
+            " -- grab it by hand via the in-game 'client' command.\n")
+        end
+      end
+    end
+  end
+end
+on("gmcp.Client.Packages", function() H.syncPackages() end)
+
 -- `ui` / `hud` alias, reload-safe (kill any alias from a previous generation).
 if H.aliasIds then
   for _, id in ipairs(H.aliasIds) do pcall(killAlias, id) end
