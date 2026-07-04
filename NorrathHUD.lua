@@ -90,6 +90,37 @@ local function btnStyle(accent)
          " QLabel:hover{ background-color:#232a3a; border-color:" .. accent .. "; color:#ffffff; }"
 end
 
+-- "#rrggbb" -> "rgba(r,g,b,a)" so fills can be translucent in Qt stylesheets.
+local function rgba(hex, a)
+  local r, g, b = hex:match("#(%x%x)(%x%x)(%x%x)")
+  if not r then return hex end
+  return string.format("rgba(%d,%d,%d,%d)", tonumber(r, 16), tonumber(g, 16), tonumber(b, 16), a)
+end
+
+-- Enemy row style: the label's own background doubles as an HP bar. Two hard
+-- gradient stops fill the left `f` fraction with the hp-tier color and leave
+-- the rest the normal button background.
+local function enemyRowBarStyle(f)
+  f = math.max(0, math.min(1, tonumber(f) or 0))
+  local fill = rgba(hpGrad(f, 1)[2], 170)
+  local empty = "#171b26"
+  local bg
+  if f >= 0.995 then
+    bg = fill
+  elseif f <= 0.005 then
+    bg = empty
+  else
+    local at = string.format("%.3f", f)
+    local after = string.format("%.3f", math.min(1, f + 0.001))
+    bg = "qlineargradient(x1:0,y1:0,x2:1,y2:0, stop:0 " .. fill .. ", stop:" .. at .. " " .. fill ..
+         ", stop:" .. after .. " " .. empty .. ", stop:1 " .. empty .. ")"
+  end
+  return "QLabel{ background-color:" .. bg .. "; color:#f1f5f9; border:1px solid #2b3140;" ..
+         " border-radius:6px; padding:2px 6px; font-family:" .. FONT .. "; font-size:" .. PT(10) .. "pt;" ..
+         " qproperty-alignment:'AlignLeft|AlignVCenter'; }" ..
+         " QLabel:hover{ border-color:#f87171; color:#ffffff; }"
+end
+
 -- ---------------------------------------------------------------------------
 -- helpers
 -- ---------------------------------------------------------------------------
@@ -728,7 +759,7 @@ function H.updateEnemies()
   for _, foe in ipairs(foes) do
     i = i + 1
     local l = H.poolLabel(H.enemyPool, i, H.cEnemies, 8, y, rowW, rowH)
-    l:setStyleSheet(btnStyle("#f87171"))
+    l:setStyleSheet(enemyRowBarStyle(frac(foe.hp, foe.maxhp)))
     local dot = foe.target and "<span style='color:#f87171'>&#9654;</span> " or ""
     local pctTxt = ""
     if H.cfg.e_pct then
