@@ -912,8 +912,9 @@ function H.updateAbilities()
   hideFrom(H.abilPool, i + 1)
 end
 
--- Char.Buffs -> a plain column of active spell effects: name + time left. The
--- timer colour warns as the buff runs down (green > 1m, amber > 18s, else red).
+-- Char.Buffs -> a column of active spell effects: name + time left. The name is
+-- coloured by kind (beneficial buff = green, harmful debuff = red) so you can
+-- see what to dispel; the timer warns as it runs down (green>1m/amber>18s/red).
 function H.updateBuffs()
   if not H.built then return end
   if H.winVisible.buffs == false then H.cBuffs:hide(); return end
@@ -928,7 +929,9 @@ function H.updateBuffs()
   for _, buff in ipairs(buffs) do
     i = i + 1
     local l = H.poolLabel(H.buffPool, i, H.cBuffs, 8, y, rowW, rowH)
-    l:setStyleSheet(btnStyle("#c084fc"))
+    local isDebuff = (buff.kind == "debuff")
+    local kcol = isDebuff and "#f87171" or "#4ade80"
+    l:setStyleSheet(btnStyle(kcol))
     local secs = tonumber(buff.secs) or 0
     local tcol = secs > 60 and "#34d399" or (secs > 18 and "#fbbf24" or "#ef4444")
     local tstr
@@ -939,7 +942,8 @@ function H.updateBuffs()
     else
       tstr = secs .. "s"
     end
-    l:echo("<span style='color:#c084fc'>&#9670;</span> " .. tostring(buff.name or "?") ..
+    l:echo("<span style='color:" .. kcol .. "'>&#9670;</span> " ..
+      "<span style='color:" .. kcol .. "'>" .. tostring(buff.name or "?") .. "</span>" ..
       "  <span style='color:" .. tcol .. "'>" .. tstr .. "</span>")
     l:setClickCallback(function() end)
     y = y + rowH + gap
