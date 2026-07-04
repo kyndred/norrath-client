@@ -121,6 +121,28 @@ local function enemyRowBarStyle(f)
          " QLabel:hover{ border-color:#f87171; color:#ffffff; }"
 end
 
+-- Con-colour hexes keyed by the server's con label (mirrors the CON_TABLE in
+-- world/eq/colors.py: |x trivial, |g green, |c lt blue, |B dk blue, |w even,
+-- |y yellow, |r red, |R deadly).
+local CON_HEX = {
+  trivial = "#9ca3af", green = "#4ade80", ["light blue"] = "#67e8f9",
+  ["dark blue"] = "#60a5fa", even = "#f1f5f9", yellow = "#facc15",
+  red = "#ef4444", deadly = "#ff3b3b",
+}
+
+-- Status-symbol prefix for an enemy row, coloured like the room listing:
+-- red # megaboss, gold * boss/named, red ! aggressive, yellow + links.
+local function enemyMarkers(flags)
+  if type(flags) ~= "table" then return "" end
+  local out = ""
+  if flags.megaboss then out = out .. "<span style='color:#ff3b3b;font-weight:bold'>#</span>" end
+  if flags.boss then out = out .. "<span style='color:#fbbf24;font-weight:bold'>*</span>" end
+  if flags.aggro then out = out .. "<span style='color:#ef4444;font-weight:bold'>!</span>" end
+  if flags.link then out = out .. "<span style='color:#facc15;font-weight:bold'>+</span>" end
+  if out ~= "" then out = out .. " " end
+  return out
+end
+
 -- ---------------------------------------------------------------------------
 -- helpers
 -- ---------------------------------------------------------------------------
@@ -766,7 +788,9 @@ function H.updateEnemies()
       pctTxt = "   <span style='color:" .. hpGrad(foe.hp, foe.maxhp)[1] .. "'>" ..
         tostring(foe.hp_percent or 0) .. "%</span>"
     end
-    l:echo(dot .. tostring(foe.name or "?") .. pctTxt)
+    local conColor = CON_HEX[tostring(foe.con or "")] or "#f1f5f9"
+    local nameTxt = "<span style='color:" .. conColor .. "'>" .. tostring(foe.name or "?") .. "</span>"
+    l:echo(dot .. enemyMarkers(foe.flags) .. nameTxt .. pctTxt)
     local cmd = foe.cmd or ("attack " .. tostring(foe.name or ""))
     l:setClickCallback(function() send(cmd) end)
     y = y + rowH + gap
