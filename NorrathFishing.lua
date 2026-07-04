@@ -6,17 +6,24 @@
 -- once a second while you fish; this package renders it (animated ASCII
 -- water, bobber, fish and jump arcs), shows the line-durability + distance
 -- gauges, flashes full-widget alerts ("IT JUMPED -- STOP REELING!"), and --
--- while fishing mode is active ONLY -- binds hotkeys:
+-- while fishing mode is active ONLY -- arms three input layers:
 --
---     w        reel            a / d    give line left / right
---     space    cast / hook     1-5      pick a spot      esc  stop
+--   1. CLICKABLE BUTTONS on the widget (spots 1-5 + throw/reel/left/right/
+--      stop) -- true no-typing play, works everywhere.
+--   2. SINGLE-LETTER aliases: just type the bare letter and enter --
+--      `t` throw/hook/reel-in, `w` reel, `a`/`d` give line, `1`-`5` spots,
+--      `q` stop. (Mudlet's command line eats raw keypresses, so enter-based
+--      single letters are the reliable "hotkey".)
+--   3. tempKey bindings for w/a/d/t/space as a bonus where the platform
+--      lets unmodified keys through.
 --
--- Every key press just sends the hidden `+fishkey <k>` command; text-client
--- players type the same thing by hand. The keys are created on the first
--- `active=true` payload and KILLED on every exit path: an `active=false`
--- payload, a 15s GMCP-silence watchdog (the server heartbeats each second
--- while you fish), disconnect, package hot-reload, and the local `fishing
--- stop` alias. Your W key can never be left stolen.
+-- Every input just sends the hidden `+fishkey <k>` command; text-client
+-- players type the same thing by hand. All three layers are armed on the
+-- first `active=true` payload and KILLED on every exit path: an
+-- `active=false` payload, a 15s GMCP-silence watchdog (the server
+-- heartbeats each second while you fish), disconnect, package hot-reload,
+-- and the local `fishing stop` alias. Your keys and your `w` are never
+-- left stolen.
 --
 -- ASCII animation: 2-3 frame flipbooks composed in layers (static shore ->
 -- phase-shifted water -> sprite at a fixed anchor), so every loop keeps
@@ -152,22 +159,36 @@ function F.build()
 
   -- Gauges: line durability + landing progress.
   F.lineGauge = Geyser.Gauge:new({
-    name = nm("nfLine"), x = "3%", y = "69%", width = "45%", height = "7%" }, F.root)
+    name = nm("nfLine"), x = "3%", y = "68%", width = "45%", height = "6%" }, F.root)
   F.lineGauge.front:setStyleSheet("background-color:#3fbf5f; border-radius:4px;")
   F.lineGauge.back:setStyleSheet("background-color:#20242e; border-radius:4px;")
   F.lineGauge:setText("line")
 
   F.distGauge = Geyser.Gauge:new({
-    name = nm("nfDist"), x = "52%", y = "69%", width = "45%", height = "7%" }, F.root)
+    name = nm("nfDist"), x = "52%", y = "68%", width = "45%", height = "6%" }, F.root)
   F.distGauge.front:setStyleSheet("background-color:#3f8fbf; border-radius:4px;")
   F.distGauge.back:setStyleSheet("background-color:#20242e; border-radius:4px;")
   F.distGauge:setText("distance")
 
+  -- Clickable action row: six contextual buttons, relabeled per state
+  -- (spots 1-5 + THROW while choosing; SET HOOK on a bite; the fight trio
+  -- mid-duel; STOP always lives in the last slot).
+  F.buttons = {}
+  for i = 1, 6 do
+    local btn = Geyser.Label:new({
+      name = nm("nfBtn" .. i),
+      x = tostring(3 + (i - 1) * 16) .. "%", y = "76%",
+      width = "15%", height = "10%",
+    }, F.root)
+    btn:hide()
+    F.buttons[i] = btn
+  end
+
   -- Key legend footer.
   F.legend = Geyser.Label:new({
-    name = nm("nfLegend"), x = "3%", y = "78%", width = "94%", height = "19%" }, F.root)
+    name = nm("nfLegend"), x = "3%", y = "88%", width = "94%", height = "10%" }, F.root)
   F.legend:setStyleSheet("background-color:transparent; color:#7c8aa8; font-family:" ..
-    FONT_UI .. "; font-size:10pt; qproperty-alignment:'AlignCenter|AlignTop';")
+    FONT_UI .. "; font-size:9pt; qproperty-alignment:'AlignCenter|AlignTop';")
 
   -- Full-stage alert layer (jump / big-hook / rare-hook), hidden until fired.
   F.alert = Geyser.Label:new({
@@ -201,7 +222,8 @@ function F.makeKeys()
     { { "w" }, [[NorrathFishing.key("w")]] },
     { { "a" }, [[NorrathFishing.key("a")]] },
     { { "d" }, [[NorrathFishing.key("d")]] },
-    { { "space", "Space" }, [[NorrathFishing.key("space")]] },
+    { { "t" }, [[NorrathFishing.key("t")]] },
+    { { "space", "Space" }, [[NorrathFishing.key("t")]] },
     { { "escape", "Escape", "esc" }, [[NorrathFishing.key("esc")]] },
     { { "1" }, [[NorrathFishing.key("1")]] },
     { { "2" }, [[NorrathFishing.key("2")]] },
@@ -213,14 +235,26 @@ function F.makeKeys()
     local id = bindKey(b[1], b[2])
     if id then F.keyIds[#F.keyIds + 1] = id end
   end
+  -- The reliable layer: bare single-letter commands, active only while
+  -- fishing. Typing `w` + enter reels; on teardown `w` is west again.
+  F.modeAliasIds = F.modeAliasIds or {}
+  F.modeAliasIds[#F.modeAliasIds + 1] =
+    tempAlias("^([wadtc12345])$", [[send("+fishkey " .. matches[2], false)]])
+  F.modeAliasIds[#F.modeAliasIds + 1] =
+    tempAlias("^(q|esc)$", [[send("+fishkey esc", false)]])
 end
 
 function F.key(k) sendKey(k) end
 
 function F.killKeys()
-  if not F.keyIds then return end
-  for _, id in ipairs(F.keyIds) do pcall(killKey, id) end
-  F.keyIds = nil
+  if F.keyIds then
+    for _, id in ipairs(F.keyIds) do pcall(killKey, id) end
+    F.keyIds = nil
+  end
+  if F.modeAliasIds then
+    for _, id in ipairs(F.modeAliasIds) do pcall(killAlias, id) end
+    F.modeAliasIds = nil
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -234,6 +268,9 @@ function F.teardown(reason)
   F.active = false
   F.state = nil
   if F.alert then F.alert:hide() end
+  if F.buttons then
+    for _, btn in ipairs(F.buttons) do pcall(function() btn:hide() end) end
+  end
   if F.root then F.root:hide() end
   if reason and reason ~= "" then
     cecho("<cyan>[Fishing] " .. reason .. "\n")
@@ -320,7 +357,7 @@ function F.render()
     end
     local sel = spots[(st.selected or 0) + 1]
     stamp(rows, ROWS - 1, 2, sel and ("> " .. (sel.name or "") .. " -- " .. (sel.hint or "")) or "")
-    stamp(rows, ROWS, 2, "[1-5] choose spot   [space] cast")
+    stamp(rows, ROWS, 2, "[1-5] choose spot   [t] throw your line")
   elseif st.state == "waiting" then
     local bob = st.bobber or {}
     local anchor = math.floor(COLS / 2)
@@ -331,14 +368,14 @@ function F.render()
     if bob.nibble then stamp(rows, WATERLINE, anchor - 2, "( ) )") end
     -- line from hull to bobber
     stamp(rows, WATERLINE - 2, anchor + 2, string.rep("_", math.max(0, COLS - 9 - anchor)))
-    stamp(rows, ROWS, 2, "[space] quick reel-in    ...watch the bobber...")
+    stamp(rows, ROWS, 2, "[t] reel back in    ...watch the bobber...")
     if st.chum then stamp(rows, ROWS - 1, 2, "the water BOILS with chummed fish") end
   elseif st.state == "bite" then
     local anchor = math.floor(COLS / 2)
     stamp(rows, WATERLINE + 1, anchor - 1, "!o!")
     stamp(rows, WATERLINE, anchor - 3, ")  (  ) (")
     stamp(rows, math.floor(ROWS / 2), math.floor(COLS / 2) - 8, "S T R I K E !")
-    stamp(rows, ROWS, 2, "[SPACE] SET THE HOOK!")
+    stamp(rows, ROWS, 2, "[T] SET THE HOOK!")
     color = "#ffd27f"
   elseif st.state == "fight" and st.fight then
     local f = st.fight
@@ -404,6 +441,61 @@ function F.animate()
   F.phase = (F.phase or 0) + 1
   pcall(F.render)
   F.animTimer = tempTimer(0.35, F.animate)
+end
+
+-- ---------------------------------------------------------------------------
+-- the contextual button row
+-- ---------------------------------------------------------------------------
+local BTN_STYLE = "background-color:#16283f; color:#cfe4ff; border:1px solid #2f5a8f;" ..
+  " border-radius:6px; font-family:" .. FONT_UI ..
+  "; font-size:11pt; font-weight:bold; qproperty-alignment:'AlignCenter';"
+local BTN_HOT = "background-color:#3f2f16; color:#ffe9c9; border:1px solid #b8862f;" ..
+  " border-radius:6px; font-family:" .. FONT_UI ..
+  "; font-size:11pt; font-weight:bold; qproperty-alignment:'AlignCenter';"
+
+-- Assign the row: specs = { {label, key, hot}, ... } (max 6; rest hidden).
+function F.setButtons(specs)
+  for i, btn in ipairs(F.buttons or {}) do
+    local spec = specs[i]
+    if spec then
+      btn:setStyleSheet(spec[3] and BTN_HOT or BTN_STYLE)
+      btn:echo(spec[1])
+      local key = spec[2]
+      btn:setClickCallback(function() send("+fishkey " .. key, false) end)
+      btn:show()
+    else
+      btn:hide()
+    end
+  end
+end
+
+function F.updateButtons(st)
+  local state = st.state
+  if state == "spot" then
+    local specs = {}
+    for i, sp in ipairs(st.spots or {}) do
+      if i <= 4 then
+        specs[#specs + 1] = { tostring(i) .. (st.selected == i - 1 and " *" or ""),
+                              tostring(i), st.selected == i - 1 }
+      end
+    end
+    specs[#specs + 1] = { "THROW (t)", "t", true }
+    specs[#specs + 1] = { "STOP", "esc" }
+    F.setButtons(specs)
+  elseif state == "waiting" then
+    F.setButtons({ { "REEL IN (t)", "t" }, { "STOP", "esc" } })
+  elseif state == "bite" then
+    F.setButtons({ { "SET HOOK! (t)", "t", true }, { "STOP", "esc" } })
+  elseif state == "fight" then
+    F.setButtons({
+      { "REEL (w)", "w", true },
+      { "< LEFT (a)", "a" },
+      { "RIGHT (d) >", "d" },
+      { "STOP", "esc" },
+    })
+  else
+    F.setButtons({})
+  end
 end
 
 -- ---------------------------------------------------------------------------
@@ -478,12 +570,14 @@ function F.onGmcp(payload)
 
   -- Key legend from the server (source of truth).
   local keys = payload.keys or {}
-  local order = { "space", "w", "a", "d", "1-5", "esc" }
+  local order = { "t", "w", "a", "d", "1-5", "esc" }
   local parts = {}
   for _, k in ipairs(order) do
     if keys[k] then parts[#parts + 1] = "<b>" .. k .. "</b> " .. keys[k] end
   end
   F.legend:echo(table.concat(parts, "   &#183;   "))
+
+  F.updateButtons(payload)
 
   -- One-shots.
   if payload.alert then F.showAlert(payload.alert) end
@@ -506,7 +600,8 @@ local HELP = {
   "  fishing test          - render a local demo state (no server needed)",
   "  fishing reload [path] - dev: hot-reload from a working-copy .lua",
   "The game itself: say <b>fish</b> in promising water. While fishing:",
-  "  w reel   a/d give line   space cast/hook   1-5 spot   esc stop",
+  "  type the bare letter + enter: t throw/hook, w reel, a/d give line,",
+  "  1-5 spot, q stop -- or just click the buttons on the widget.",
 }
 
 function F.command(rest)
@@ -525,7 +620,7 @@ function F.command(rest)
       fight = { line_hp = 62, line_max = 100, distance = 74, pull = "left",
                 jump = false, heft = tonumber(arg) or 4, glint = arg == "gold",
                 hint = "demo" },
-      keys = { space = "cast/hook", w = "reel", a = "give left", d = "give right",
+      keys = { t = "throw/hook", w = "reel", a = "give left", d = "give right",
                ["1-5"] = "spot", esc = "stop" },
       alert = { kind = "hooked_big", text = "SOMETHING HUGE TAKES THE HOOK -- BRACE YOURSELF!", ms = 1800 },
     })
