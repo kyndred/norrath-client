@@ -34,6 +34,11 @@
 NorrathCutscene = NorrathCutscene or {}
 local C = NorrathCutscene
 
+-- Sane state even if a build ever aborts partway: skip/finish must never
+-- arithmetic on nil or leave the overlay unclosable.
+C.token = C.token or 0
+C.playing = C.playing or false
+
 -- ---------------------------------------------------------------------------
 -- theme
 -- ---------------------------------------------------------------------------
@@ -103,12 +108,19 @@ function C.build()
   pcall(function() C.console:setFontSize(12) end)
   pcall(function() C.console:setFont("Menlo") end)
   pcall(function() C.console:enableAutoWrap() end)
-  C.console:setClickCallback(function() C.skip() end)
 
   C.image = Geyser.Label:new({
     name = nm("ncImage"), x = 0, y = 0, width = "100%", height = "100%" }, C.stage)
   C.image:setStyleSheet("background-color:transparent;")
   C.image:setClickCallback(function() C.skip() end)
+
+  -- Click-to-skip over the stage. Geyser.MiniConsole has no setClickCallback
+  -- (calling it crashes the whole build on stock Mudlet), so a transparent
+  -- Label sits on top of the console/image and catches clicks instead.
+  C.clickGuard = Geyser.Label:new({
+    name = nm("ncClickGuard"), x = 0, y = 0, width = "100%", height = "100%" }, C.stage)
+  C.clickGuard:setStyleSheet("background-color:transparent;")
+  C.clickGuard:setClickCallback(function() C.skip() end)
 
   -- Caption bar (over the bottom letterbox).
   C.caption = Geyser.Label:new({
@@ -318,7 +330,7 @@ function C.play(scene)
 end
 
 function C.finish()
-  C.token = C.token + 1 -- invalidate any pending step
+  C.token = (C.token or 0) + 1 -- invalidate any pending step
   C.playing = false
   if C.root then C.root:hide() end
   raiseEvent("norrathCutsceneDone")
@@ -466,6 +478,13 @@ C.aliasIds[#C.aliasIds + 1] =
 C.aliasIds[#C.aliasIds + 1] =
   tempAlias("^\\s*update\\s+(cut|cutscene)\\s*$", [[NorrathCutscene.command("reload")]])
 
+-- The skip hint promises Esc; bind it. skip() no-ops unless a scene is
+-- actually playing, so grabbing the key is otherwise harmless.
+if C.escKeyId then pcall(killKey, C.escKeyId) end
+pcall(function()
+  C.escKeyId = tempKey(mudlet.key.Escape, [[NorrathCutscene.skip()]])
+end)
+
 -- Read the live GMCP table (fresh each event).
 function C.gmcp() return gmcp and gmcp.Client and gmcp.Client.Cutscene or nil end
 
@@ -474,5 +493,16 @@ function C.gmcp() return gmcp and gmcp.Client and gmcp.Client.Cutscene or nil en
 if C.root then pcall(function() C.root:hide() end) end
 C.gen = (C.gen or 0) + 1
 C.built = false
-C.build()
-cecho("<green>[Norrath Cutscene]<reset> v1 loaded. Try 'cut test meteor', or 'cut help'.\n")
+-- Guarded build: widgets are visible the moment they are created and only
+-- hidden at the end of build(), so an error partway through would otherwise
+-- strand a black, unclosable overlay over the whole window (seen live when
+-- MiniConsole:setClickCallback didn't exist). On failure, hide whatever got
+-- built and say so instead.
+local buildOk, buildErr = pcall(C.build)
+if buildOk then
+  cecho("<green>[Norrath Cutscene]<reset> v2 loaded. Try 'cut test meteor', or 'cut help'.\n")
+else
+  if C.root then pcall(function() C.root:hide() end) end
+  cecho("<red>[Norrath Cutscene] failed to build the overlay: " ..
+    tostring(buildErr) .. " -- cutscenes disabled.\n")
+end
