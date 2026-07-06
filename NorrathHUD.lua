@@ -1,8 +1,8 @@
 -----------------------------------------------------------------------------
--- Norrath HUD  --  Mudlet package  (v12: water rooms tint their map-cell
--- background on a four-shade teal->navy ladder -- river, shallow, deep,
--- ocean -- and exit connectors touching water render blue, so waterways
--- read at a glance on the fog-of-war grid)
+-- Norrath HUD  --  Mudlet package  (v13: map links are terrain-coloured --
+-- green over land, blue touching water -- and water detection is a strict
+-- tier whitelist, fixing the v12 everything-is-blue regression caused by
+-- Mudlet decoding JSON null to a truthy sentinel)
 --
 -- A Geyser HUD fed entirely by the server's GMCP. Each panel is a draggable,
 -- resizable, self-persisting Adjustable.Container with a titled frame.
@@ -431,10 +431,13 @@ local WATER_BORDER = {
   deep    = { entered = "#3b74d9", seen = "#1e3a6b" },
   ocean   = { entered = "#4a63d9", seen = "#232f6b" },
 }
+-- Strict whitelist: only the four known tier strings count as water. Mudlet
+-- decodes a JSON null to a truthy sentinel (not nil), so any looser truthiness
+-- check floods the whole land map blue (v12 regression).
 local function waterTier(room)
   local w = room.water
-  if not w or w == "" then return nil end
-  return WATER_BG[w] and w or "deep" -- unknown future tier: readable fallback
+  if type(w) == "string" and WATER_BG[w] then return w end
+  return nil
 end
 
 local function roomCellStyle(room, isCenter)
@@ -496,8 +499,9 @@ end
 local function mapTooltipHtml(room)
   local lines = { "<b>" .. tostring(room.name or ("Room " .. tostring(room.id))) .. "</b>" }
   local bits = {}
-  if room.terrain and room.terrain ~= "" then bits[#bits + 1] = tostring(room.terrain) end
-  if room.water and room.water ~= "" then bits[#bits + 1] = tostring(room.water) .. " water" end
+  if type(room.terrain) == "string" and room.terrain ~= "" then bits[#bits + 1] = room.terrain end
+  local wt = waterTier(room)
+  if wt then bits[#bits + 1] = wt .. " water" end
   if room.safe then bits[#bits + 1] = "safe" end
   if room.camp then bits[#bits + 1] = "camp" end
   if room.named then bits[#bits + 1] = "named!" end
@@ -509,11 +513,10 @@ local function mapTooltipHtml(room)
   return table.concat(lines, "<br>")
 end
 
--- Colour of exit connectors on the map. Muted slate so the room cells and
--- marker glyphs stay the focus, but bright enough to read against the panel.
--- Connectors touching a water room render blue instead, so swim routes read
--- at a glance alongside the blue water cells.
-local LINK_COLOUR = "#6b7688"
+-- Colour of exit connectors on the map, keyed by terrain: land routes render
+-- muted green, connectors touching a water room render blue, so walk vs swim
+-- reads at a glance. (Room to grow: mountains etc. can join this palette.)
+local LINK_COLOUR = "#5c8a63"
 local WATER_LINK_COLOUR = "#3b7dc4"
 
 -- Draw every exit connector for the rooms currently placed on the map. Each
@@ -530,10 +533,11 @@ function H.drawMapLinks(rm, pos, cell, step)
   local seen = {}
   local k = 0
   -- Water lookup by room id, so a shore->water edge can be tinted blue even
-  -- though only the destination cell is wet.
+  -- though only the destination cell is wet. Same strict tier whitelist as the
+  -- cells -- Mudlet's truthy JSON-null sentinel must not count as water.
   local waterById = {}
   for _, r in ipairs(rm.rooms) do
-    if r.water and r.water ~= "" then waterById[r.id] = true end
+    if waterTier(r) then waterById[r.id] = true end
   end
   for _, r in ipairs(rm.rooms) do
     local a = pos[r.id]
@@ -1503,4 +1507,4 @@ H.setMapMode(H.mapMode)
 H.refreshAll()
 H.startResizeWatch()  -- reflow children when a panel is drag-resized
 H.startWorldBlink()   -- blink the "you are here" zone on the world atlas
-cecho("<green>[Norrath HUD]<reset> v12 loaded (water on the map: 4 blue shades, river -> shallow -> deep -> ocean). Click the world/local button on the map frame, right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
+cecho("<green>[Norrath HUD]<reset> v13 loaded (map links: green = land, blue = water; land no longer misreads as water). Click the world/local button on the map frame, right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
