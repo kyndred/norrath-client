@@ -1,8 +1,8 @@
 -----------------------------------------------------------------------------
--- Norrath HUD  --  Mudlet package  (v11: water rooms tint their map-cell
--- background blue -- teal-cyan for shallow/river, deep blue for deep/ocean --
--- and exit connectors touching water render blue, so waterways read at a
--- glance on the fog-of-war grid)
+-- Norrath HUD  --  Mudlet package  (v12: water rooms tint their map-cell
+-- background on a four-shade teal->navy ladder -- river, shallow, deep,
+-- ocean -- and exit connectors touching water render blue, so waterways
+-- read at a glance on the fog-of-war grid)
 --
 -- A Geyser HUD fed entirely by the server's GMCP. Each panel is a draggable,
 -- resizable, self-persisting Adjustable.Container with a titled frame.
@@ -417,16 +417,24 @@ end
 -- rooms whose data is "stale" (outside the current vision radius, served
 -- from the cached room_memory snapshot) also get a dashed border.
 -- Water cells keep their marker border/glyph but swap the cell background for
--- a blue so open water reads at a glance. Two tiers: shallow/river (teal-cyan)
--- vs deep/ocean (deep blue), each with a dimmer not-yet-entered variant.
+-- a blue so open water reads at a glance. Four tiers on a teal->navy ladder
+-- (river greenest, ocean darkest), each with a dimmer not-yet-entered variant.
 local WATER_BG = {
+  river   = { entered = "#0e4a47", seen = "#093230" },
   shallow = { entered = "#0e4258", seen = "#092c3c" },
   deep    = { entered = "#123064", seen = "#0b1f42" },
+  ocean   = { entered = "#0c1c4e", seen = "#071233" },
+}
+local WATER_BORDER = {
+  river   = { entered = "#3fc9ba", seen = "#1e6b62" },
+  shallow = { entered = "#3fb2d9", seen = "#1e546b" },
+  deep    = { entered = "#3b74d9", seen = "#1e3a6b" },
+  ocean   = { entered = "#4a63d9", seen = "#232f6b" },
 }
 local function waterTier(room)
   local w = room.water
   if not w or w == "" then return nil end
-  return (w == "shallow" or w == "river") and "shallow" or "deep"
+  return WATER_BG[w] and w or "deep" -- unknown future tier: readable fallback
 end
 
 local function roomCellStyle(room, isCenter)
@@ -448,11 +456,7 @@ local function roomCellStyle(room, isCenter)
     border, bg = "#34d399", (room.entered and "#0f3227" or "#0b1f19")
   elseif tier then
     -- Plain water room: blue border too, so a markerless cell still reads wet.
-    if tier == "shallow" then
-      border = room.entered and "#3fb2d9" or "#1e546b"
-    else
-      border = room.entered and "#3b74d9" or "#1e3a6b"
-    end
+    border = WATER_BORDER[tier][room.entered and "entered" or "seen"]
     bg = "" -- filled from WATER_BG below
   else
     -- Plain rooms: entered ("your trail") is noticeably lighter than a room
@@ -1499,4 +1503,4 @@ H.setMapMode(H.mapMode)
 H.refreshAll()
 H.startResizeWatch()  -- reflow children when a panel is drag-resized
 H.startWorldBlink()   -- blink the "you are here" zone on the world atlas
-cecho("<green>[Norrath HUD]<reset> v11 loaded (water rooms + their links now render blue on the map). Click the world/local button on the map frame, right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
+cecho("<green>[Norrath HUD]<reset> v12 loaded (water on the map: 4 blue shades, river -> shallow -> deep -> ocean). Click the world/local button on the map frame, right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
