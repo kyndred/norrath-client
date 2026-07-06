@@ -1,7 +1,8 @@
 -----------------------------------------------------------------------------
--- Norrath HUD  --  Mudlet package  (v10: Map panel gains a world/local toggle
--- -- a pixel-tile world atlas (Room.Worldmap) rendered as decho background
--- cells, alongside the existing fog-of-war local map)
+-- Norrath HUD  --  Mudlet package  (v11: water rooms tint their map-cell
+-- background blue -- teal-cyan for shallow/river, deep blue for deep/ocean --
+-- and exit connectors touching water render blue, so waterways read at a
+-- glance on the fog-of-war grid)
 --
 -- A Geyser HUD fed entirely by the server's GMCP. Each panel is a draggable,
 -- resizable, self-persisting Adjustable.Container with a titled frame.
@@ -415,8 +416,22 @@ end
 -- rendered with a dimmer palette and a dashed border regardless of marker;
 -- rooms whose data is "stale" (outside the current vision radius, served
 -- from the cached room_memory snapshot) also get a dashed border.
+-- Water cells keep their marker border/glyph but swap the cell background for
+-- a blue so open water reads at a glance. Two tiers: shallow/river (teal-cyan)
+-- vs deep/ocean (deep blue), each with a dimmer not-yet-entered variant.
+local WATER_BG = {
+  shallow = { entered = "#0e4258", seen = "#092c3c" },
+  deep    = { entered = "#123064", seen = "#0b1f42" },
+}
+local function waterTier(room)
+  local w = room.water
+  if not w or w == "" then return nil end
+  return (w == "shallow" or w == "river") and "shallow" or "deep"
+end
+
 local function roomCellStyle(room, isCenter)
   local border, bg
+  local tier = waterTier(room)
   if isCenter then
     -- You-are-here: brightest, most saturated cell on the panel + a thick 3px
     -- ring so it reads instantly against every other marker colour.
@@ -431,11 +446,24 @@ local function roomCellStyle(room, isCenter)
     border, bg = "#fb923c", (room.entered and "#42260e" or "#24190a")
   elseif room.safe then
     border, bg = "#34d399", (room.entered and "#0f3227" or "#0b1f19")
+  elseif tier then
+    -- Plain water room: blue border too, so a markerless cell still reads wet.
+    if tier == "shallow" then
+      border = room.entered and "#3fb2d9" or "#1e546b"
+    else
+      border = room.entered and "#3b74d9" or "#1e3a6b"
+    end
+    bg = "" -- filled from WATER_BG below
   else
     -- Plain rooms: entered ("your trail") is noticeably lighter than a room
     -- only glimpsed from afar, so your walked path stands out on the grid.
     border = room.entered and "#556072" or "#2b3242"
     bg = room.entered and "#1c2230" or "#12151d"
+  end
+  -- Water background wins over the marker background (border + glyph still
+  -- carry the marker), so vendors/camps/exits sitting on water stay blue.
+  if tier and not isCenter then
+    bg = WATER_BG[tier][room.entered and "entered" or "seen"]
   end
   local width = isCenter and "3px" or "2px"
   local style = "border-style:solid;"
@@ -465,6 +493,7 @@ local function mapTooltipHtml(room)
   local lines = { "<b>" .. tostring(room.name or ("Room " .. tostring(room.id))) .. "</b>" }
   local bits = {}
   if room.terrain and room.terrain ~= "" then bits[#bits + 1] = tostring(room.terrain) end
+  if room.water and room.water ~= "" then bits[#bits + 1] = tostring(room.water) .. " water" end
   if room.safe then bits[#bits + 1] = "safe" end
   if room.camp then bits[#bits + 1] = "camp" end
   if room.named then bits[#bits + 1] = "named!" end
@@ -478,7 +507,10 @@ end
 
 -- Colour of exit connectors on the map. Muted slate so the room cells and
 -- marker glyphs stay the focus, but bright enough to read against the panel.
+-- Connectors touching a water room render blue instead, so swim routes read
+-- at a glance alongside the blue water cells.
 local LINK_COLOUR = "#6b7688"
+local WATER_LINK_COLOUR = "#3b7dc4"
 
 -- Draw every exit connector for the rooms currently placed on the map. Each
 -- edge is derived from a room's `exits` (dir -> destination id): if the
@@ -493,6 +525,12 @@ function H.drawMapLinks(rm, pos, cell, step)
   local half = cell / 2
   local seen = {}
   local k = 0
+  -- Water lookup by room id, so a shore->water edge can be tinted blue even
+  -- though only the destination cell is wet.
+  local waterById = {}
+  for _, r in ipairs(rm.rooms) do
+    if r.water and r.water ~= "" then waterById[r.id] = true end
+  end
   for _, r in ipairs(rm.rooms) do
     local a = pos[r.id]
     if a and type(r.exits) == "table" then
@@ -502,19 +540,20 @@ function H.drawMapLinks(rm, pos, cell, step)
           local key = (r.id < destId) and (r.id .. "-" .. destId) or (destId .. "-" .. r.id)
           if not seen[key] then
             seen[key] = true
+            local lc = (waterById[r.id] or waterById[destId]) and WATER_LINK_COLOUR or LINK_COLOUR
             local ddx, ddy = b.x - a.x, b.y - a.y
             k = k + 1
             if ddy == 0 and ddx ~= 0 then          -- east/west
               local left = math.min(a.x, b.x)
               local l = H.poolLabel(H.mapLinkPool, k, H.cMap,
                 left + cell, a.y + half - math.floor(t / 2), math.abs(ddx) - cell, t)
-              l:setStyleSheet("QLabel{ background-color:" .. LINK_COLOUR .. "; border-radius:1px; }")
+              l:setStyleSheet("QLabel{ background-color:" .. lc .. "; border-radius:1px; }")
               l:echo("")
             elseif ddx == 0 and ddy ~= 0 then      -- north/south
               local top = math.min(a.y, b.y)
               local l = H.poolLabel(H.mapLinkPool, k, H.cMap,
                 a.x + half - math.floor(t / 2), top + cell, t, math.abs(ddy) - cell)
-              l:setStyleSheet("QLabel{ background-color:" .. LINK_COLOUR .. "; border-radius:1px; }")
+              l:setStyleSheet("QLabel{ background-color:" .. lc .. "; border-radius:1px; }")
               l:echo("")
             else                                   -- diagonal
               -- Box-drawing glyph centered on the midpoint of the two cells.
@@ -526,7 +565,7 @@ function H.drawMapLinks(rm, pos, cell, step)
               local fs = tostring(math.max(6, math.floor(step * 0.9)))
               local l = H.poolLabel(H.mapLinkPool, k, H.cMap,
                 mx - d / 2, my - d / 2, d, d)
-              l:setStyleSheet("QLabel{ background-color:transparent; color:" .. LINK_COLOUR ..
+              l:setStyleSheet("QLabel{ background-color:transparent; color:" .. lc ..
                 "; font-size:" .. fs .. "pt; qproperty-alignment:'AlignCenter'; }")
               l:echo(glyph)
             end
@@ -1460,4 +1499,4 @@ H.setMapMode(H.mapMode)
 H.refreshAll()
 H.startResizeWatch()  -- reflow children when a panel is drag-resized
 H.startWorldBlink()   -- blink the "you are here" zone on the world atlas
-cecho("<green>[Norrath HUD]<reset> v10 loaded (map panel gains a world/local toggle -- pixel-tile world atlas from Room.Worldmap). Click the world/local button on the map frame, right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
+cecho("<green>[Norrath HUD]<reset> v11 loaded (water rooms + their links now render blue on the map). Click the world/local button on the map frame, right-click a panel -> Bigger/Smaller, or 'ui help'.\n")
